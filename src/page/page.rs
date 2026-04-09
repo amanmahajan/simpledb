@@ -1,7 +1,7 @@
 // page.rs
-use crate::utils::byte::*;
-use crate::btree::tuple::{Tuple, TupleBuilder};
 use crate::btree::key::Key;
+use crate::btree::tuple::{Tuple, TupleBuilder};
+use crate::utils::byte::*;
 
 /// Peanut DB - 8KB slotted page (InnoDB-style 2-byte record directory).
 ///
@@ -124,8 +124,7 @@ impl Page {
         if used == 0 {
             return false;
         }
-        (self.dead_tuple_bytes() as usize) * 100
-            >= used * self.dead_tuple_compact_percent as usize
+        (self.dead_tuple_bytes() as usize) * 100 >= used * self.dead_tuple_compact_percent as usize
     }
 
     fn compact_live_tuples(&mut self) -> Result<(), &'static str> {
@@ -136,7 +135,10 @@ impl Page {
             if self.read_tuple_tombstone(off) == 1 {
                 continue;
             }
-            live.push((self.read_key(off).to_vec(), self.read_tuple_val(off).to_vec()));
+            live.push((
+                self.read_key(off).to_vec(),
+                self.read_tuple_val(off).to_vec(),
+            ));
         }
 
         let mut compacted = Page::new(self.page_id());
@@ -315,8 +317,6 @@ impl Page {
 
         SearchResult::NotFound(lo)
     }
-    
-    
 
     /// Looks up `key` and returns value bytes if found and not tombstoned.
     pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
@@ -333,7 +333,7 @@ impl Page {
         }
     }
 
- /**   Inserts or updates a key-value pair.
+    /**   Inserts or updates a key-value pair.
     • If key already exists: tombstones the old tuple, writes a new tuple with the new value, updates the slot to point to the new tuple. Returns the old value.
     • If key is new: allocates space for the tuple, writes it, allocates a new slot, and shifts existing slots right to insert the new slot at the correct sorted position. Returns None.
     • Fails with "page full" if there isn't enough free space.*/
@@ -375,8 +375,7 @@ impl Page {
                 let new_off = self.alloc_tuple(tuple_bytes.len())? as usize;
 
                 // Copy new tuple bytes into page
-                self.data[new_off..new_off + tuple_bytes.len()]
-                    .copy_from_slice(tuple_bytes);
+                self.data[new_off..new_off + tuple_bytes.len()].copy_from_slice(tuple_bytes);
 
                 // Update slot to point to new tuple
                 self.write_slot(i, new_off as u16);
@@ -400,8 +399,7 @@ impl Page {
                 let new_off = self.alloc_tuple(tuple_bytes.len())? as usize;
 
                 // Copy tuple bytes
-                self.data[new_off..new_off + tuple_bytes.len()]
-                    .copy_from_slice(tuple_bytes);
+                self.data[new_off..new_off + tuple_bytes.len()].copy_from_slice(tuple_bytes);
 
                 // Allocate slot
                 let slot_idx = self.alloc_slot()?;
@@ -419,7 +417,7 @@ impl Page {
             }
         }
     }
-   /** Deletes a key-value pair.
+    /** Deletes a key-value pair.
     • Tombstones the tuple (marks it deleted in-place).
     • Shifts all slots left to fill the gap left by the removed slot.
     • Updates the slot count and free_start in the header.
@@ -461,7 +459,7 @@ impl Page {
 
     pub fn get_key_value_at_slot(&self, slot_idx: usize) -> Option<(&[u8], &[u8])> {
         if slot_idx >= self.slot_count() as usize {
-            return  None;
+            return None;
         }
         let off = self.read_slot(slot_idx) as usize;
 
@@ -470,5 +468,4 @@ impl Page {
         }
         Some((self.read_key(off), self.read_tuple_val(off)))
     }
-
 }

@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rand::{rng, Rng, RngExt};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use rand::{Rng, RngExt, rng};
 use simpledb::page::Page;
 
 fn bench_put(c: &mut Criterion) {

@@ -98,9 +98,18 @@ fn get_key_value_at_slot_returns_key_value_for_live_slot() {
     page.put(b"k1", b"v1").unwrap();
     page.put(b"k3", b"v3").unwrap();
 
-    assert_eq!(page.get_key_value_at_slot(0), Some((&b"k1"[..], &b"v1"[..])));
-    assert_eq!(page.get_key_value_at_slot(1), Some((&b"k2"[..], &b"v2"[..])));
-    assert_eq!(page.get_key_value_at_slot(2), Some((&b"k3"[..], &b"v3"[..])));
+    assert_eq!(
+        page.get_key_value_at_slot(0),
+        Some((&b"k1"[..], &b"v1"[..]))
+    );
+    assert_eq!(
+        page.get_key_value_at_slot(1),
+        Some((&b"k2"[..], &b"v2"[..]))
+    );
+    assert_eq!(
+        page.get_key_value_at_slot(2),
+        Some((&b"k3"[..], &b"v3"[..]))
+    );
 }
 
 #[test]

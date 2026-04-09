@@ -1,4 +1,4 @@
-use rand::{rng, Rng, RngExt};
+use rand::{Rng, RngExt, rng};
 
 pub fn random_string(min_len: usize, max_len: usize) -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

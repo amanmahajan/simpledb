@@ -10,53 +10,49 @@ pub struct LeafPageMut<'a> {
 
 pub struct LeafSplit {
     pub separator_key: Vec<u8>,
-    pub right_page: LeafPage
+    pub right_page: LeafPage,
 }
 
 impl LeafPage {
-    
-    pub fn new (page_id: u32) -> Self {
+    pub fn new(page_id: u32) -> Self {
         Self {
             page: Page::new(page_id),
         }
     }
-    
+
     pub fn from_page(p: Page) -> Self {
-        Self {
-            page: p,
-        }
+        Self { page: p }
     }
-    
+
     pub fn into_page(self) -> Page {
         self.page
     }
-    
+
     pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
         self.page.get(key)
     }
-    
+
     pub fn slot_count(&self) -> u16 {
         self.page.slot_count()
     }
-    
+
     pub fn free_space_byte(&self) -> usize {
         self.page.free_space_bytes()
     }
-    pub  fn key_val_at(&self, slot_id: usize) -> Option<(&[u8],&[u8])> {
+    pub fn key_val_at(&self, slot_id: usize) -> Option<(&[u8], &[u8])> {
         self.page.get_key_value_at_slot(slot_id)
-    } 
-    
+    }
+
     // Helper function for splitting
-    
+
     pub fn entries(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut out = Vec::with_capacity(self.slot_count() as usize);
         for i in 0..self.slot_count() as usize {
-           if let Some((k,v)) = self.key_val_at(i) {
-               out.push((k.to_vec(), v.to_vec()));
-           } 
+            if let Some((k, v)) = self.key_val_at(i) {
+                out.push((k.to_vec(), v.to_vec()));
+            }
         }
         out
-    
     }
 }
 
@@ -107,6 +103,4 @@ impl<'a> LeafPageMut<'a> {
 
         out
     }
-    
-    
 }
