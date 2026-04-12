@@ -54,6 +54,14 @@ impl LeafPage {
         }
         out
     }
+
+    pub fn page_id(&self) -> u32 {
+        self.page.page_id()
+    }
+
+    pub fn next_leaf_page_id(&self) -> Option<u32> {
+        self.page.next_leaf_page_id()
+    }
 }
 
 
@@ -105,6 +113,18 @@ impl<'a> LeafPageMut<'a> {
         out
     }
 
+    pub fn page_id(&self) -> u32 {
+        self.page.page_id()
+    }
+
+    pub fn next_leaf_page_id(&self) -> Option<u32> {
+        self.page.next_leaf_page_id()
+    }
+
+    pub fn set_next_leaf_page_id(&mut self, next: Option<u32>) {
+        self.page.set_next_leaf_page_id(next);
+    }
+
     pub fn insert_or_split(
         &mut self,
         key: &[u8],
@@ -123,6 +143,9 @@ impl<'a> LeafPageMut<'a> {
                 let right_entries = &all[mid..];
 
                 let separator_key = right_entries[0].0.clone();
+                
+                let old_next = self.page.next_leaf_page_id();
+
 
                 let mut new_left = Page::new(self.page.page_id());
                 let mut new_right = Page::new(new_right_page_id);
@@ -134,6 +157,8 @@ impl<'a> LeafPageMut<'a> {
                 for (k, v) in right_entries {
                     new_right.put(k, v)?;
                 }
+                new_left.set_next_leaf_page_id(Some(new_right_page_id));
+                new_right.set_next_leaf_page_id(old_next);
 
                 *self.page = new_left;
 

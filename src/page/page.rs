@@ -14,7 +14,7 @@ use crate::utils::byte::*;
 /// Endianness: Little-endian for all integer fields
 
 pub const PAGE_SIZE: usize = 8 * 1024; //8kb
-pub const HEADER_SIZE: usize = 16;
+pub const HEADER_SIZE: usize = 20;
 
 //page_magic is a sentinel value stored in every page header that identifies:
 // “This block of bytes is a Peanut DB page, and it uses this page format.”
@@ -25,8 +25,10 @@ const HDR_MAGIC_OFF: usize = 0;
 const HDR_PAGE_ID_OFF: usize = 4;
 const HDR_SLOT_CNT_OFF: usize = 8;
 const HDR_FREE_START_OFF: usize = 10;
+
 const HDR_FREE_END_OFF: usize = 12;
 const HDR_DEAD_BYTES_OFF: usize = 14;
+const HDR_NEXT_LEAF_PAGE_ID_OFF: usize = 16; // Pointer to the next page
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchResult {
@@ -60,6 +62,7 @@ impl Page {
         write_u16(&mut p.data, HDR_FREE_START_OFF, HEADER_SIZE as u16);
         write_u16(&mut p.data, HDR_FREE_END_OFF, PAGE_SIZE as u16);
         write_u16(&mut p.data, HDR_DEAD_BYTES_OFF, 0);
+        write_u32(&mut p.data, HDR_NEXT_LEAF_PAGE_ID_OFF, 0);
 
         p
     }
@@ -94,6 +97,18 @@ impl Page {
 
     fn set_dead_tuple_bytes(&mut self, dead_bytes: u16) {
         write_u16(&mut self.data, HDR_DEAD_BYTES_OFF, dead_bytes);
+    }
+
+    pub fn next_leaf_page_id(&self) -> Option<u32> {
+        match read_u32(&self.data, HDR_NEXT_LEAF_PAGE_ID_OFF) {
+            0 => None,
+            v => Some(v),
+        }
+    }
+
+    pub fn set_next_leaf_page_id(&mut self, next: Option<u32>) {
+        let raw = next.unwrap_or(0);
+        write_u32(&mut self.data, HDR_NEXT_LEAF_PAGE_ID_OFF, raw);
     }
 
     pub(crate) fn page_id(&self) -> u32 {
