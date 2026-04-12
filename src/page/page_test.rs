@@ -1,12 +1,12 @@
-use super::page::Page;
+use super::page::{Page, HEADER_SIZE, PAGE_SIZE};
 
 #[test]
 fn new_page_initializes_header_and_free_space() {
     let page = Page::new(7);
 
     assert_eq!(page.slot_count(), 0);
-    assert_eq!(page.free_start() as usize, Page::SLOT_SIZE * 0 + 16);
-    assert_eq!(page.free_end() as usize, 8 * 1024);
+    assert_eq!(page.free_start() as usize, HEADER_SIZE + Page::SLOT_SIZE * 0);
+    assert_eq!(page.free_end() as usize, PAGE_SIZE);
     assert!(page.validate_basic().is_ok());
 }
 
@@ -66,8 +66,8 @@ fn remove_triggers_compaction_when_dead_bytes_cross_threshold() {
 
     assert_eq!(page.slot_count(), 0);
     assert_eq!(page.dead_tuple_bytes(), 0);
-    assert_eq!(page.free_end() as usize, 8 * 1024);
-    assert_eq!(page.free_start() as usize, 16);
+    assert_eq!(page.free_end() as usize, PAGE_SIZE);
+    assert_eq!(page.free_start() as usize, HEADER_SIZE);
     assert!(page.validate_basic().is_ok());
 }
 
