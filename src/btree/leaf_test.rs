@@ -147,3 +147,70 @@ fn insert_or_split_updates_existing_key_without_loss_or_duplication() {
         "updated key should appear exactly once after split"
     );
 }
+
+#[test]
+fn leaf_split_sets_sibling_pointer_when_no_old_next() {
+    let mut page = Page::new(1);
+    let mut leaf = LeafPageMut::new(&mut page);
+
+    for i in 0..4 {
+        let k = key(i);
+        let v = value(b'a' + i as u8, 1700);
+        leaf.insert(&k, &v).unwrap();
+    }
+
+    assert_eq!(leaf.next_leaf_page_id(), None);
+
+    let split = leaf
+        .insert_or_split(&key(4), &value(b'z', 1700), 2)
+        .unwrap()
+        .expect("expected split");
+
+    let left = LeafPage::from_page(leaf.page().clone());
+    let right = split.right_page;
+
+    assert_eq!(left.page_id(), 1);
+    assert_eq!(right.page_id(), 2);
+
+    assert_eq!(left.next_leaf_page_id(), Some(2));
+    assert_eq!(right.next_leaf_page_id(), None);
+}
+
+#[test]
+fn leaf_split_preserves_old_next_sibling_chain() {
+    let mut page = Page::new(1);
+    let mut leaf = LeafPageMut::new(&mut page);
+
+    leaf.set_next_leaf_page_id(Some(99));
+
+    for i in 0..4 {
+        let k = key(i);
+        let v = value(b'a' + i as u8, 1700);
+        leaf.insert(&k, &v).unwrap();
+    }
+
+    let split = leaf
+        .insert_or_split(&key(4), &value(b'z', 1700), 2)
+        .unwrap()
+        .expect("expected split");
+
+    let left = LeafPage::from_page(leaf.page().clone());
+    let right = split.right_page;
+
+    assert_eq!(left.next_leaf_page_id(), Some(2));
+    assert_eq!(right.next_leaf_page_id(), Some(99));
+}
+
+#[test]
+fn leaf_next_pointer_round_trip() {
+    let mut page = Page::new(1);
+    let mut leaf = LeafPageMut::new(&mut page);
+
+    assert_eq!(leaf.next_leaf_page_id(), None);
+
+    leaf.set_next_leaf_page_id(Some(42));
+    assert_eq!(leaf.next_leaf_page_id(), Some(42));
+
+    leaf.set_next_leaf_page_id(None);
+    assert_eq!(leaf.next_leaf_page_id(), None);
+}
