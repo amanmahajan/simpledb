@@ -56,6 +56,7 @@ impl LeafPage {
     }
 }
 
+
 impl<'a> LeafPageMut<'a> {
     pub fn new(page: &'a mut Page) -> Self {
         Self { page }
@@ -102,5 +103,46 @@ impl<'a> LeafPageMut<'a> {
         }
 
         out
+    }
+
+    pub fn insert_or_split(
+        &mut self,
+        key: &[u8],
+        val: &[u8],
+        new_right_page_id: u32,
+    ) -> Result<Option<LeafSplit>, &'static str> {
+        match self.insert(key, val) {
+            Ok(_) => Ok(None),
+            Err("page full") => {
+                let mut all = self.entries();
+                all.push((key.to_vec(), val.to_vec()));
+                all.sort_by(|a, b| a.0.cmp(&b.0));
+
+                let mid = all.len() / 2;
+                let left_entries = &all[..mid];
+                let right_entries = &all[mid..];
+
+                let separator_key = right_entries[0].0.clone();
+
+                let mut new_left = Page::new(self.page.page_id());
+                let mut new_right = Page::new(new_right_page_id);
+
+                for (k, v) in left_entries {
+                    new_left.put(k, v)?;
+                }
+
+                for (k, v) in right_entries {
+                    new_right.put(k, v)?;
+                }
+
+                *self.page = new_left;
+
+                Ok(Some(LeafSplit {
+                    separator_key,
+                    right_page: LeafPage::from_page(new_right),
+                }))
+            }
+            Err(e) => Err(e),
+        }
     }
 }

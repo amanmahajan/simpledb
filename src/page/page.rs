@@ -96,7 +96,7 @@ impl Page {
         write_u16(&mut self.data, HDR_DEAD_BYTES_OFF, dead_bytes);
     }
 
-    fn page_id(&self) -> u32 {
+    pub(crate) fn page_id(&self) -> u32 {
         read_u32(&self.data, HDR_PAGE_ID_OFF)
     }
 
