@@ -64,7 +64,6 @@ impl LeafPage {
     }
 }
 
-
 impl<'a> LeafPageMut<'a> {
     pub fn new(page: &'a mut Page) -> Self {
         Self { page }
@@ -143,9 +142,8 @@ impl<'a> LeafPageMut<'a> {
                 let right_entries = &all[mid..];
 
                 let separator_key = right_entries[0].0.clone();
-                
-                let old_next = self.page.next_leaf_page_id();
 
+                let old_next = self.page.next_leaf_page_id();
 
                 let mut new_left = Page::new(self.page.page_id());
                 let mut new_right = Page::new(new_right_page_id);

@@ -10,7 +10,10 @@ fn value(tag: u8, len: usize) -> Vec<u8> {
     vec![tag; len]
 }
 
-fn split_with_total_entries(total_entries: usize, value_len: usize) -> (LeafPage, LeafPage, Vec<u8>) {
+fn split_with_total_entries(
+    total_entries: usize,
+    value_len: usize,
+) -> (LeafPage, LeafPage, Vec<u8>) {
     let mut page = Page::new(1);
     let mut leaf = LeafPageMut::new(&mut page);
 
@@ -52,7 +55,8 @@ fn assert_split_invariants(
     assert!(!right_entries.is_empty(), "right page must contain entries");
     assert_eq!(separator_key, right_entries[0].0.as_slice());
 
-    if let (Some((left_max, _)), Some((right_min, _))) = (left_entries.last(), right_entries.first())
+    if let (Some((left_max, _)), Some((right_min, _))) =
+        (left_entries.last(), right_entries.first())
     {
         assert!(
             left_max < right_min,
@@ -82,7 +86,12 @@ fn assert_split_invariants(
 #[test]
 fn insert_or_split_preserves_invariants_for_odd_total_entries() {
     let expected: Vec<(Vec<u8>, Vec<u8>)> = (0..5)
-        .map(|i| (key(i), value(if i == 4 { b'z' } else { b'a' + i as u8 }, 1700)))
+        .map(|i| {
+            (
+                key(i),
+                value(if i == 4 { b'z' } else { b'a' + i as u8 }, 1700),
+            )
+        })
         .collect();
 
     let (left, right, separator_key) = split_with_total_entries(5, 1700);
@@ -95,7 +104,12 @@ fn insert_or_split_preserves_invariants_for_odd_total_entries() {
 #[test]
 fn insert_or_split_preserves_invariants_for_even_total_entries() {
     let expected: Vec<(Vec<u8>, Vec<u8>)> = (0..6)
-        .map(|i| (key(i), value(if i == 5 { b'z' } else { b'a' + i as u8 }, 1500)))
+        .map(|i| {
+            (
+                key(i),
+                value(if i == 5 { b'z' } else { b'a' + i as u8 }, 1500),
+            )
+        })
         .collect();
 
     let (left, right, separator_key) = split_with_total_entries(6, 1500);
