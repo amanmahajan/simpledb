@@ -1,11 +1,14 @@
-use super::page::{Page, HEADER_SIZE, PAGE_SIZE};
+use super::page::{HEADER_SIZE, PAGE_SIZE, Page};
 
 #[test]
 fn new_page_initializes_header_and_free_space() {
     let page = Page::new(7);
 
     assert_eq!(page.slot_count(), 0);
-    assert_eq!(page.free_start() as usize, HEADER_SIZE + Page::SLOT_SIZE * 0);
+    assert_eq!(
+        page.free_start() as usize,
+        HEADER_SIZE + Page::SLOT_SIZE * 0
+    );
     assert_eq!(page.free_end() as usize, PAGE_SIZE);
     assert!(page.validate_basic().is_ok());
 }
@@ -126,5 +129,3 @@ fn get_key_value_at_slot_returns_none_for_out_of_bounds_or_removed_slot() {
     assert_eq!(page.get_key_value_at_slot(0), Some((&b"b"[..], &b"2"[..])));
     assert_eq!(page.get_key_value_at_slot(1), None);
 }
-
-
