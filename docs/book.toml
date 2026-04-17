@@ -1,0 +1,8 @@
+[book]
+title = "simpledb Internals"
+authors = ["Aman Mahajan"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/amanmahajan/simpledb"
