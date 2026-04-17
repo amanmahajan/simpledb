@@ -1,0 +1,970 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>simpledb Internals</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-c3400d01.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-a9e74398.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">simpledb Internals</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/amanmahajan/simpledb" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p><code>simpledb</code> is a Rust project for hands-on exploration of database storage internals. Rather than wrapping an existing engine, it builds core primitives from scratch: fixed-size pages, slotted tuple storage, B-tree leaf pages, and a page manager.</p>
+<p>The goal is clarity over completeness. Each layer is small enough to read in one sitting, so the design decisions are visible and the trade-offs are easy to reason about.</p>
+<h2 id="whats-implemented"><a class="header" href="#whats-implemented">What’s implemented</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Component</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>8 KB slotted page (<code>Page</code>)</td><td>Done</td></tr>
+<tr><td>Tuple serialization (<code>Tuple</code>, <code>TupleBuilder</code>)</td><td>Done</td></tr>
+<tr><td>B-tree leaf page + split (<code>LeafPage</code>, <code>LeafPageMut</code>)</td><td>Done</td></tr>
+<tr><td>In-memory page manager (<code>Pager</code>)</td><td>Done</td></tr>
+<tr><td>B-tree internal nodes + full tree</td><td>Not yet</td></tr>
+<tr><td>Disk I/O</td><td>Not yet</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="getting-started"><a class="header" href="#getting-started">Getting started</a></h2>
+<pre><code class="language-bash"># Build
+cargo build
+
+# Run all tests
+cargo test
+
+# Run benchmarks
+cargo bench
+</code></pre>
+<h2 id="project-layout"><a class="header" href="#project-layout">Project layout</a></h2>
+<pre><code>src/
+  page/       8 KB slotted page
+  btree/      Key, Tuple, Leaf, and Tree types
+  pager/      In-memory page manager
+  utils/      Byte I/O helpers and utilities
+benches/      Criterion benchmarks
+docs/         This book
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
+<h2 id="module-dependency-graph"><a class="header" href="#module-dependency-graph">Module dependency graph</a></h2>
+<pre><code>┌──────────────────────────────────────┐
+│               BTree                  │  (btree/tree.rs — stub)
+│  root_page_id: u32                   │
+│  pager: Pager                        │
+└────────────────┬─────────────────────┘
+                 │ uses
+                 ▼
+┌──────────────────────────────────────┐
+│    LeafPage / LeafPageMut            │  (btree/leaf.rs)
+│  insert_or_split                     │
+│  entries / get / remove              │
+└────────────────┬─────────────────────┘
+                 │ wraps
+                 ▼
+┌──────────────────────────────────────┐
+│               Page                   │  (page/page.rs)
+│  put / get / remove                  │
+│  slot array + tuple region           │
+│  dead-tuple compaction               │
+└──────────────────────────────────────┘
+
+┌──────────────────────────────────────┐
+│              Pager                   │  (pager/pager.rs)
+│  HashMap&lt;u32, Page&gt;                  │
+│  alloc_page_id / new_page            │
+└──────────────────────────────────────┘
+
+┌──────────────────────────────────────┐
+│         Tuple / TupleBuilder         │  (btree/tuple.rs)
+│         Key&lt;D&gt;                       │  (btree/key.rs)
+│         byte utils                   │  (utils/byte.rs)
+└──────────────────────────────────────┘
+</code></pre>
+<h2 id="data-flow-inserting-a-key-value-pair"><a class="header" href="#data-flow-inserting-a-key-value-pair">Data flow: inserting a key-value pair</a></h2>
+<pre><code>caller
+  │
+  │  LeafPageMut::insert_or_split(key, val, new_page_id)
+  ▼
+LeafPageMut
+  │  Page::put(key, val)
+  ▼
+Page
+  │  find_slot(key)         ← binary search on slot array
+  │  alloc_tuple(len)       ← claim bytes from tuple region
+  │  write_tuple(off, ...)  ← serialize tombstone+key_len+val_len+key+val
+  │  alloc_slot / shift     ← insert u16 offset into sorted slot array
+  ▼
+  [page bytes updated in-place]
+
+if "page full"
+  ▼
+LeafPageMut::insert_or_split
+  │  collect all entries + new entry
+  │  sort by key
+  │  split at midpoint → left page, right page
+  │  wire sibling pointers  (left.next = right, right.next = old_next)
+  ▼
+  LeafSplit { separator_key, right_page }
+</code></pre>
+<h2 id="key-design-principles"><a class="header" href="#key-design-principles">Key design principles</a></h2>
+<p><strong>Fixed-size pages.</strong> Every page is exactly 8 KB, matching typical OS and SSD page sizes. This makes future disk I/O straightforward.</p>
+<p><strong>Sorted slot array.</strong> Slots are <code>u16</code> byte offsets kept in key order. Binary search over slots gives O(log n) lookup without a separate index structure.</p>
+<p><strong>Tombstone deletes.</strong> Deleted and overwritten tuples are marked with a flag byte instead of being removed immediately. Space is reclaimed lazily by a compaction pass.</p>
+<p><strong>Zero-copy tuple views.</strong> <code>Tuple&lt;A&gt;</code> is generic over any <code>AsRef&lt;[u8]&gt;</code>, so tuple data can be read directly from page memory without copying.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="page-layout"><a class="header" href="#page-layout">Page Layout</a></h1>
+<p>A <code>Page</code> is a fixed-size 8 KB buffer (<code>PAGE_SIZE = 8192</code>). Every page starts with a 20-byte header, followed by a slot array that grows toward higher addresses, and a tuple region that grows toward lower addresses from the end of the page.</p>
+<pre><code>Byte 0                                              Byte 8191
+┌──────────────┬────────────────────┬──────┬───────────────────────┐
+│  Header      │   Slot array       │ free │  Tuple region         │
+│  (20 bytes)  │  (2 bytes/slot)    │      │  (variable-length     │
+│              │  ──────────────►   │      │   tuples)  ◄────────  │
+└──────────────┴────────────────────┴──────┴───────────────────────┘
+               ▲                    ▲      ▲
+           free_start begins    free_start free_end
+           at HEADER_SIZE       advances   retreats
+</code></pre>
+<h2 id="header-fields"><a class="header" href="#header-fields">Header fields</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Offset</th><th>Size</th><th>Field</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td>4</td><td><code>magic</code></td><td>Sentinel <code>0x504E5554</code> (“PNUT”) — identifies valid pages</td></tr>
+<tr><td>4</td><td>4</td><td><code>page_id</code></td><td>Unique page identifier</td></tr>
+<tr><td>8</td><td>2</td><td><code>slot_count</code></td><td>Number of live slots</td></tr>
+<tr><td>10</td><td>2</td><td><code>free_start</code></td><td>Byte offset right after the slot array</td></tr>
+<tr><td>12</td><td>2</td><td><code>free_end</code></td><td>Byte offset right before the tuple region</td></tr>
+<tr><td>14</td><td>2</td><td><code>dead_bytes</code></td><td>Bytes occupied by tombstoned tuples</td></tr>
+<tr><td>16</td><td>4</td><td><code>next_leaf_page_id</code></td><td>Sibling pointer for the leaf linked list (<code>0</code> = none)</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>free_space_bytes = free_end - free_start</code> is the usable gap between the slot array and the tuple region.</p>
+<h2 id="initializing-a-page"><a class="header" href="#initializing-a-page">Initializing a page</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn new(page_id: u32) -&gt; Self {
+    let mut p = Page {
+        data: [0u8; PAGE_SIZE],
+        dead_tuple_compact_percent: Self::DEFAULT_DEAD_TUPLE_COMPACT_PERCENT,
+    };
+
+    write_u32(&amp;mut p.data, HDR_MAGIC_OFF, PAGE_MAGIC);       // 0x504E5554
+    write_u32(&amp;mut p.data, HDR_PAGE_ID_OFF, page_id);
+    write_u16(&amp;mut p.data, HDR_SLOT_CNT_OFF, 0);
+    write_u16(&amp;mut p.data, HDR_FREE_START_OFF, HEADER_SIZE as u16); // 20
+    write_u16(&amp;mut p.data, HDR_FREE_END_OFF, PAGE_SIZE as u16);     // 8192
+    write_u16(&amp;mut p.data, HDR_DEAD_BYTES_OFF, 0);
+    write_u32(&amp;mut p.data, HDR_NEXT_LEAF_PAGE_ID_OFF, 0);
+    p
+}
+<span class="boring">}</span></code></pre>
+<p>On a fresh page <code>free_start = 20</code> and <code>free_end = 8192</code>, giving 8172 bytes of free space.</p>
+<h2 id="slot-array"><a class="header" href="#slot-array">Slot array</a></h2>
+<p>Each slot is a <code>u16</code> little-endian byte offset pointing to a tuple in the tuple region. Slots are stored in <strong>sorted key order</strong> — binary search is used for all lookups. Slot <code>i</code> lives at byte <code>20 + i * 2</code> in the page.</p>
+<p>When a new key is inserted, all slots at positions ≥ the insertion point are shifted right by one slot to open a gap, then the new slot is written.</p>
+<h2 id="tuple-region"><a class="header" href="#tuple-region">Tuple region</a></h2>
+<p>Tuples are written from the end of the page toward the header. <code>alloc_tuple(len)</code> subtracts <code>len</code> from <code>free_end</code> and returns the new offset. Each tuple is self-describing:</p>
+<pre><code>┌──────────┬─────────┬─────────┬──────────┬──────────┐
+│ tombstone│ key_len │ val_len │   key    │   value  │
+│  (1 B)   │ (2 B LE)│ (2 B LE)│          │          │
+└──────────┴─────────┴─────────┴──────────┴──────────┘
+ offset+0   offset+1  offset+3  offset+5   offset+5+key_len
+</code></pre>
+<p>Total tuple size = <code>1 + 2 + 2 + key_len + val_len</code>.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="page-operations"><a class="header" href="#page-operations">Page Operations</a></h1>
+<p>All key-value operations go through a binary search on the sorted slot array. The <code>find_slot</code> helper returns either the slot index where the key was found or the index where it should be inserted.</p>
+<h2 id="binary-search--find_slot"><a class="header" href="#binary-search--find_slot">Binary search — <code>find_slot</code></a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>enum SearchResult {
+    Found(usize),     // index of the existing slot
+    NotFound(usize),  // index where a new slot should be inserted
+}
+
+fn find_slot(&amp;self, key: &amp;[u8]) -&gt; SearchResult {
+    let search_key = Key::from(key);
+    let mut lo = 0usize;
+    let mut hi = self.slot_count() as usize;
+
+    while lo &lt; hi {
+        let mid = (lo + hi) / 2;
+        let tuple_off = self.read_slot(mid) as usize;
+        let mid_key = Tuple::from(&amp;self.data[tuple_off..]).key();
+
+        match mid_key.cmp(&amp;search_key) {
+            Ordering::Equal   =&gt; return SearchResult::Found(mid),
+            Ordering::Less    =&gt; lo = mid + 1,
+            Ordering::Greater =&gt; hi = mid,
+        }
+    }
+    SearchResult::NotFound(lo)
+}
+<span class="boring">}</span></code></pre>
+<p>Keys are compared as raw byte slices in lexicographic order via <code>Key&lt;D&gt;</code>’s <code>Ord</code> implementation.</p>
+<h2 id="get"><a class="header" href="#get"><code>get</code></a></h2>
+<p>Looks up the key. Returns <code>None</code> if the key is absent or its tuple is tombstoned.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn get(&amp;self, key: &amp;[u8]) -&gt; Option&lt;&amp;[u8]&gt; {
+    match self.find_slot(key) {
+        SearchResult::Found(i) =&gt; {
+            let off = self.read_slot(i) as usize;
+            if self.read_tuple_tombstone(off) == 1 {
+                None
+            } else {
+                Some(self.read_tuple_val(off))
+            }
+        }
+        SearchResult::NotFound(_) =&gt; None,
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>The returned slice borrows directly from the page buffer — no copy.</p>
+<h2 id="put"><a class="header" href="#put"><code>put</code></a></h2>
+<p>Handles two cases depending on whether the key already exists.</p>
+<p><strong>New key (insert):</strong></p>
+<ol>
+<li>Check free space ≥ <code>tuple_len + SLOT_SIZE</code>; compact dead tuples if needed.</li>
+<li><code>alloc_tuple(len)</code> — reserve bytes at the end of the tuple region.</li>
+<li><code>write_tuple(off, ...)</code> — serialize the tombstone flag, lengths, key, and value.</li>
+<li><code>alloc_slot()</code> — increment <code>slot_count</code> and advance <code>free_start</code>.</li>
+<li>Shift all slots at positions ≥ <code>pos</code> right by one.</li>
+<li>Write the new slot at position <code>pos</code>.</li>
+</ol>
+<p><strong>Existing key (overwrite):</strong></p>
+<ol>
+<li>Check free space ≥ <code>tuple_len</code>; compact if needed.</li>
+<li>Read the old tuple bytes (to return as the old value).</li>
+<li>Tombstone the old tuple (<code>data[old_off] = 1</code>) and account for its dead bytes.</li>
+<li>Allocate and write the new tuple.</li>
+<li>Update the existing slot to point to the new tuple offset.</li>
+<li>Trigger compaction if the threshold is crossed.</li>
+</ol>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn put(&amp;mut self, key: &amp;[u8], val: &amp;[u8])
+    -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, &amp;'static str&gt;
+<span class="boring">}</span></code></pre>
+<p>Returns <code>Ok(None)</code> on insert, <code>Ok(Some(old_val))</code> on overwrite, <code>Err("page full")</code> when there is no space even after compaction.</p>
+<h2 id="remove"><a class="header" href="#remove"><code>remove</code></a></h2>
+<ol>
+<li>Tombstones the tuple at the found slot.</li>
+<li>Shifts all slots after position <code>i</code> left by one (closing the gap).</li>
+<li>Decrements <code>slot_count</code> and retreats <code>free_start</code>.</li>
+<li>Triggers compaction if the threshold is crossed.</li>
+</ol>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn remove(&amp;mut self, key: &amp;[u8]) -&gt; Option&lt;Vec&lt;u8&gt;&gt;
+<span class="boring">}</span></code></pre>
+<p>Returns the old value, or <code>None</code> if the key was not found.</p>
+<h2 id="get_key_value_at_slot"><a class="header" href="#get_key_value_at_slot"><code>get_key_value_at_slot</code></a></h2>
+<p>Iterates slots by index (useful for scanning all entries):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn get_key_value_at_slot(&amp;self, slot_idx: usize) -&gt; Option&lt;(&amp;[u8], &amp;[u8])&gt;
+<span class="boring">}</span></code></pre>
+<p>Returns <code>None</code> for out-of-bounds indices or tombstoned tuples. Because slots are kept sorted, iterating slots 0…n gives keys in ascending order.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="dead-tuple-compaction"><a class="header" href="#dead-tuple-compaction">Dead-Tuple Compaction</a></h1>
+<p>Deleting or overwriting a tuple does not free its bytes immediately. The old tuple is tombstoned in-place and its size is added to a <code>dead_bytes</code> counter in the page header. Space is reclaimed lazily by a compaction pass.</p>
+<h2 id="why-lazy-compaction"><a class="header" href="#why-lazy-compaction">Why lazy compaction?</a></h2>
+<p>An immediate in-place shift of all subsequent tuple bytes would be O(page_size) and would invalidate every slot offset. Lazy compaction amortizes this cost: many tombstones can accumulate and be cleared in a single pass.</p>
+<h2 id="threshold-check"><a class="header" href="#threshold-check">Threshold check</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn should_compact_dead_tuples(&amp;self) -&gt; bool {
+    let used = self.tuple_region_used_bytes(); // PAGE_SIZE - free_end
+    if used == 0 {
+        return false;
+    }
+    (self.dead_tuple_bytes() as usize) * 100
+        &gt;= used * self.dead_tuple_compact_percent as usize
+}
+<span class="boring">}</span></code></pre>
+<p><code>dead_tuple_compact_percent</code> defaults to <strong>75</strong> — compaction fires when dead bytes account for 75% or more of the total tuple region. It can be tuned per page:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>page.set_dead_tuple_compact_percent(50); // compact at 50%
+<span class="boring">}</span></code></pre>
+<h2 id="compaction-algorithm"><a class="header" href="#compaction-algorithm">Compaction algorithm</a></h2>
+<p><code>compact_live_tuples</code> rebuilds the page from scratch, writing only live tuples:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn compact_live_tuples(&amp;mut self) -&gt; Result&lt;(), &amp;'static str&gt; {
+    let mut live = Vec::with_capacity(self.slot_count() as usize);
+
+    for i in 0..self.slot_count() as usize {
+        let off = self.read_slot(i) as usize;
+        if self.read_tuple_tombstone(off) == 1 {
+            continue;
+        }
+        live.push((
+            self.read_key(off).to_vec(),
+            self.read_tuple_val(off).to_vec(),
+        ));
+    }
+
+    let mut compacted = Page::new(self.page_id());
+    compacted.set_dead_tuple_compact_percent(self.dead_tuple_compact_percent);
+    for (k, v) in live {
+        compacted.put(&amp;k, &amp;v)?;
+    }
+
+    self.data = compacted.data; // swap the buffer
+    Ok(())
+}
+<span class="boring">}</span></code></pre>
+<p>After compaction <code>dead_bytes = 0</code> and <code>free_end</code> is restored to reflect only the live tuples.</p>
+<h2 id="when-compaction-is-triggered"><a class="header" href="#when-compaction-is-triggered">When compaction is triggered</a></h2>
+<p><code>maybe_compact_dead_tuples</code> is called:</p>
+<ul>
+<li>After every <code>remove</code>.</li>
+<li>After every overwrite in <code>put</code> (before and after writing the new tuple, to ensure there is room).</li>
+</ul>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn maybe_compact_dead_tuples(&amp;mut self) -&gt; Result&lt;(), &amp;'static str&gt; {
+    if self.should_compact_dead_tuples() {
+        self.compact_live_tuples()?;
+    }
+    Ok(())
+}
+<span class="boring">}</span></code></pre>
+<h2 id="effect-on-free-space"><a class="header" href="#effect-on-free-space">Effect on free space</a></h2>
+<p>After compaction the page behaves as if the tombstoned tuples never existed. All live tuples are repacked from the end of the page with no gaps, maximising usable free space.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="tuples"><a class="header" href="#tuples">Tuples</a></h1>
+<p>A tuple is the unit of data stored inside a page. It carries a small header (flags, key length, value length) followed by the raw key and value bytes. The same wire format is used both inside the page buffer and in the owned heap representation.</p>
+<h2 id="wire-format"><a class="header" href="#wire-format">Wire format</a></h2>
+<pre><code>┌──────────┬─────────┬─────────┬──────────┬──────────┐
+│  flags   │ key_len │ val_len │   key    │   value  │
+│  (1 B)   │ (2 B LE)│ (2 B LE)│ (n bytes)│ (m bytes)│
+└──────────┴─────────┴─────────┴──────────┴──────────┘
+  byte 0     byte 1    byte 3    byte 5     byte 5+n
+</code></pre>
+<p>Total size = <code>5 + key_len + val_len</code>.</p>
+<p>The <code>flags</code> byte is currently used as a tombstone flag by the <code>Page</code> layer (<code>0</code> = live, <code>1</code> = deleted). The tuple type itself treats it as an opaque <code>u8</code>.</p>
+<h2 id="tuplea--zero-copy-generic-view"><a class="header" href="#tuplea--zero-copy-generic-view"><code>Tuple&lt;A&gt;</code> — zero-copy generic view</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct Tuple&lt;A&gt; {
+    pub data: A,
+}
+<span class="boring">}</span></code></pre>
+<p><code>Tuple&lt;A&gt;</code> works over any buffer type. Common variants:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Use</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Tuple&lt;&amp;[u8]&gt;</code></td><td>Read-only view into page memory</td></tr>
+<tr><td><code>Tuple&lt;&amp;mut [u8]&gt;</code></td><td>Mutable view for in-place header edits</td></tr>
+<tr><td><code>Tuple&lt;Vec&lt;u8&gt;&gt;</code></td><td>Owned tuple (aliased as <code>OwningTuple</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Accessors delegate to <code>TupleHeader</code>:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl&lt;A: AsRef&lt;[u8]&gt;&gt; Tuple&lt;A&gt; {
+    pub fn header(&amp;self) -&gt; TupleHeader&lt;&amp;[u8]&gt; { ... }
+    pub fn key(&amp;self) -&gt; Key&lt;&amp;[u8]&gt; { ... }   // borrows key bytes
+    pub fn bytes(&amp;self) -&gt; &amp;[u8] { ... }       // everything after header
+}
+<span class="boring">}</span></code></pre>
+<h2 id="tupleheadera"><a class="header" href="#tupleheadera"><code>TupleHeader&lt;A&gt;</code></a></h2>
+<p>Reads and writes the 5-byte header:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl&lt;A: AsRef&lt;[u8]&gt;&gt; TupleHeader&lt;A&gt; {
+    pub fn flags(&amp;self) -&gt; u8    { ... }
+    pub fn key_len(&amp;self) -&gt; u16 { ... }  // little-endian u16
+    pub fn value_len(&amp;self) -&gt; u16 { ... }
+}
+
+impl&lt;A: AsRef&lt;[u8]&gt; + AsMut&lt;[u8]&gt;&gt; TupleHeader&lt;A&gt; {
+    pub fn set_flags(&amp;mut self, flags: u8)       { ... }
+    pub fn set_key_len(&amp;mut self, len: u16)      { ... }
+    pub fn set_value_len(&amp;mut self, len: u16)    { ... }
+}
+<span class="boring">}</span></code></pre>
+<h2 id="tuplebuilder--constructing-owned-tuples"><a class="header" href="#tuplebuilder--constructing-owned-tuples"><code>TupleBuilder</code> — constructing owned tuples</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let tuple = TupleBuilder::new()
+    .flags(0)
+    .key(b"hello")
+    .value(b"world")
+    .build(); // returns OwningTuple (= Tuple&lt;Vec&lt;u8&gt;&gt;)
+
+let bytes = tuple.as_bytes(); // &amp;[u8] ready to copy into a page
+<span class="boring">}</span></code></pre>
+<p><code>TupleBuilder</code> allocates a <code>Vec&lt;u8&gt;</code>, writes the header fields in little-endian order, then appends key and value bytes.</p>
+<h2 id="conversion-helpers"><a class="header" href="#conversion-helpers">Conversion helpers</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let owned: OwningTuple = TupleBuilder::new().key("k").value("v").build();
+
+let view: Tuple&lt;&amp;[u8]&gt;     = owned.to_ref();
+let mut_view: Tuple&lt;&amp;mut [u8]&gt; = owned.to_mut_ref();
+let raw: Vec&lt;u8&gt;            = owned.into_vec();
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="key-abstraction"><a class="header" href="#key-abstraction">Key Abstraction</a></h1>
+<p><code>Key&lt;D&gt;</code> is a thin newtype wrapper over any byte-like type. Its only job is to give raw byte data a meaningful ordering and display.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct Key&lt;D&gt; {
+    data: D,
+}
+<span class="boring">}</span></code></pre>
+<h2 id="why-a-newtype"><a class="header" href="#why-a-newtype">Why a newtype?</a></h2>
+<p>Rust’s built-in <code>[u8]</code> slice comparison is already lexicographic, but wrapping keys in <code>Key&lt;D&gt;</code> makes intent explicit and keeps comparison logic in one place. If the ordering ever needs to change (e.g. to a numeric or collation-aware comparison), only this type needs to change.</p>
+<h2 id="ordering"><a class="header" href="#ordering">Ordering</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl&lt;D: AsRef&lt;[u8]&gt;&gt; Ord for Key&lt;D&gt; {
+    fn cmp(&amp;self, other: &amp;Self) -&gt; Ordering {
+        self.data.as_ref().cmp(other.data.as_ref())
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>Bytes are compared left-to-right. Shorter keys that are a prefix of a longer key sort earlier (e.g. <code>"foo" &lt; "foobar"</code>).</p>
+<h2 id="generic-over-the-backing-storage"><a class="header" href="#generic-over-the-backing-storage">Generic over the backing storage</a></h2>
+<p><code>D</code> can be any type implementing <code>AsRef&lt;[u8]&gt;</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>D</th><th>Typical use</th></tr>
+</thead>
+<tbody>
+<tr><td><code>&amp;[u8]</code></td><td>Zero-copy view into page memory</td></tr>
+<tr><td><code>Vec&lt;u8&gt;</code></td><td>Owned key</td></tr>
+<tr><td><code>&amp;str</code></td><td>String keys in tests</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="accessors"><a class="header" href="#accessors">Accessors</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>key.bytes()  // &amp;D — the raw backing data
+key.len()    // usize — number of bytes
+<span class="boring">}</span></code></pre>
+<p><code>Display</code> formats as <code>Key([104, 101, 108, 108, 111])</code> (raw byte array).</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="leaf-pages"><a class="header" href="#leaf-pages">Leaf Pages</a></h1>
+<p>A B-tree leaf page holds sorted key-value pairs. In <code>simpledb</code> the leaf layer is a thin wrapper around <code>Page</code> that adds the B-tree-specific concept of a sibling pointer and the split operation.</p>
+<h2 id="types"><a class="header" href="#types">Types</a></h2>
+<h3 id="leafpage--owned-leaf"><a class="header" href="#leafpage--owned-leaf"><code>LeafPage</code> — owned leaf</a></h3>
+<p><code>LeafPage</code> owns a <code>Page</code> and exposes read-only operations.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct LeafPage {
+    page: Page,
+}
+<span class="boring">}</span></code></pre>
+<p>Key methods:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl LeafPage {
+    pub fn new(page_id: u32) -&gt; Self { ... }
+    pub fn from_page(p: Page) -&gt; Self { ... }
+    pub fn into_page(self) -&gt; Page { ... }
+
+    pub fn get(&amp;self, key: &amp;[u8]) -&gt; Option&lt;&amp;[u8]&gt; { ... }
+    pub fn slot_count(&amp;self) -&gt; u16 { ... }
+    pub fn key_val_at(&amp;self, slot_id: usize) -&gt; Option&lt;(&amp;[u8], &amp;[u8])&gt; { ... }
+    pub fn entries(&amp;self) -&gt; Vec&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt; { ... }
+
+    pub fn page_id(&amp;self) -&gt; u32 { ... }
+    pub fn next_leaf_page_id(&amp;self) -&gt; Option&lt;u32&gt; { ... }
+}
+<span class="boring">}</span></code></pre>
+<h3 id="leafpagemuta--borrowed-mutable-leaf"><a class="header" href="#leafpagemuta--borrowed-mutable-leaf"><code>LeafPageMut&lt;'a&gt;</code> — borrowed mutable leaf</a></h3>
+<p><code>LeafPageMut&lt;'a&gt;</code> holds a <code>&amp;'a mut Page</code> for mutation. This lifetime-based design lets the <code>BTree</code> own the pages through the <code>Pager</code> while giving the leaf layer a temporary mutable view.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct LeafPageMut&lt;'a&gt; {
+    page: &amp;'a mut Page,
+}
+<span class="boring">}</span></code></pre>
+<p>Additional write methods:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl&lt;'a&gt; LeafPageMut&lt;'a&gt; {
+    pub fn insert(&amp;mut self, key: &amp;[u8], val: &amp;[u8])
+        -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, &amp;'static str&gt; { ... }
+    pub fn remove(&amp;mut self, key: &amp;[u8]) -&gt; Option&lt;Vec&lt;u8&gt;&gt; { ... }
+    pub fn set_next_leaf_page_id(&amp;mut self, next: Option&lt;u32&gt;) { ... }
+    pub fn insert_or_split(...) -&gt; Result&lt;Option&lt;LeafSplit&gt;, &amp;'static str&gt; { ... }
+}
+<span class="boring">}</span></code></pre>
+<h3 id="leafsplit"><a class="header" href="#leafsplit"><code>LeafSplit</code></a></h3>
+<p>Returned when <code>insert_or_split</code> decides the page must split:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct LeafSplit {
+    pub separator_key: Vec&lt;u8&gt;,  // first key of the right page
+    pub right_page: LeafPage,    // the newly created right leaf
+}
+<span class="boring">}</span></code></pre>
+<p>The caller (eventually the <code>BTree</code>) is responsible for storing the <code>right_page</code> in the pager and inserting <code>separator_key</code> into the parent internal node.</p>
+<h2 id="sibling-pointer-chain"><a class="header" href="#sibling-pointer-chain">Sibling pointer chain</a></h2>
+<p>Leaf pages form a singly-linked list via <code>next_leaf_page_id</code>. This enables efficient forward range scans without traversing the tree from the root.</p>
+<pre><code>Page 1  ──next──►  Page 3  ──next──►  Page 5  ──next──►  None
+[k00..k02]         [k03..k05]         [k06..k08]
+</code></pre>
+<p>The pointer is stored in the page header at offset 16 (4 bytes). <code>0</code> means no next sibling.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="leaf-splits"><a class="header" href="#leaf-splits">Leaf Splits</a></h1>
+<p>When a leaf page is full, inserting a new key-value pair requires splitting the page into two. <code>LeafPageMut::insert_or_split</code> handles this transparently — the caller only needs to check whether a <code>LeafSplit</code> was returned.</p>
+<h2 id="algorithm"><a class="header" href="#algorithm">Algorithm</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn insert_or_split(
+    &amp;mut self,
+    key: &amp;[u8],
+    val: &amp;[u8],
+    new_right_page_id: u32,
+) -&gt; Result&lt;Option&lt;LeafSplit&gt;, &amp;'static str&gt;
+<span class="boring">}</span></code></pre>
+<ol>
+<li><strong>Try a normal insert.</strong> If it succeeds, return <code>Ok(None)</code> — no split needed.</li>
+<li><strong>On “page full”</strong>, collect <em>all</em> current entries plus the new <code>(key, val)</code> into a <code>Vec</code>.</li>
+<li><strong>Sort</strong> the combined list by key.</li>
+<li><strong>Split at the midpoint</strong>: left half stays in the current page, right half goes to a new page with <code>new_right_page_id</code>.</li>
+<li><strong>Separator key</strong> = first key of the right page (<code>right_entries[0].0</code>).</li>
+<li><strong>Rebuild both pages</strong> from scratch using <code>Page::new</code> + <code>put</code> calls.</li>
+<li><strong>Wire sibling pointers</strong>:
+<ul>
+<li><code>left.next = new_right_page_id</code></li>
+<li><code>right.next = old_next</code> (preserves the existing chain)</li>
+</ul>
+</li>
+<li>Overwrite <code>*self.page</code> with the new left page.</li>
+<li>Return <code>Ok(Some(LeafSplit { separator_key, right_page }))</code>.</li>
+</ol>
+<h2 id="before-and-after"><a class="header" href="#before-and-after">Before and after</a></h2>
+<pre><code>Before split (page 1 is full, inserting k04):
+
+Page 1: [k00, k01, k02, k03]  ──next──►  Page 5
+
+After split (new_right_page_id = 2):
+
+Page 1: [k00, k01]  ──next──►  Page 2: [k02, k03, k04]  ──next──►  Page 5
+                                ▲
+                          separator_key = k02
+</code></pre>
+<p>The caller receives the separator key and the right page. If there is a parent internal node, the separator key and a pointer to page 2 must be inserted there.</p>
+<h2 id="code"><a class="header" href="#code">Code</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>Err("page full") =&gt; {
+    let mut all = self.entries();
+    all.push((key.to_vec(), val.to_vec()));
+    all.sort_by(|a, b| a.0.cmp(&amp;b.0));
+
+    let mid = all.len() / 2;
+    let left_entries  = &amp;all[..mid];
+    let right_entries = &amp;all[mid..];
+
+    let separator_key = right_entries[0].0.clone();
+    let old_next = self.page.next_leaf_page_id();
+
+    let mut new_left  = Page::new(self.page.page_id());
+    let mut new_right = Page::new(new_right_page_id);
+
+    for (k, v) in left_entries  { new_left.put(k, v)?;  }
+    for (k, v) in right_entries { new_right.put(k, v)?; }
+
+    new_left.set_next_leaf_page_id(Some(new_right_page_id));
+    new_right.set_next_leaf_page_id(old_next);
+
+    *self.page = new_left;
+
+    Ok(Some(LeafSplit { separator_key, right_page: LeafPage::from_page(new_right) }))
+}
+<span class="boring">}</span></code></pre>
+<h2 id="split-invariants-enforced-by-tests"><a class="header" href="#split-invariants-enforced-by-tests">Split invariants (enforced by tests)</a></h2>
+<ul>
+<li>The right page is never empty.</li>
+<li><code>separator_key == right_page.entries()[0].0</code> — the separator is exactly the first key of the right page.</li>
+<li>Every key in the left page is strictly less than every key in the right page.</li>
+<li>No key-value pair is lost or duplicated.</li>
+<li>The existing sibling chain is preserved: <code>right.next = old_next</code>.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-pager"><a class="header" href="#the-pager">The Pager</a></h1>
+<p>The <code>Pager</code> manages the collection of pages. It assigns page IDs, allocates new pages, and provides mutable or shared access to existing ones.</p>
+<h2 id="current-implementation"><a class="header" href="#current-implementation">Current implementation</a></h2>
+<p>The pager is entirely in-memory, backed by a <code>HashMap</code>:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct Pager {
+    pages: HashMap&lt;u32, Page&gt;,
+    next_page_id: u32,
+}
+<span class="boring">}</span></code></pre>
+<p>Page IDs start at <code>1</code> and increment monotonically. ID <code>0</code> is reserved as a sentinel meaning “no page” (used by the <code>next_leaf_page_id</code> sibling pointer).</p>
+<h2 id="api"><a class="header" href="#api">API</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl Pager {
+    pub fn new() -&gt; Self { ... }
+
+    /// Allocate a fresh page ID without creating a page.
+    pub fn alloc_page_id(&amp;mut self) -&gt; u32 { ... }
+
+    /// Allocate an ID, create an empty page, store it, and return the ID.
+    pub fn new_page(&amp;mut self) -&gt; u32 { ... }
+
+    /// Store a page that was created externally (e.g. after a leaf split).
+    pub fn insert_page(&amp;mut self, page: Page) { ... }
+
+    pub fn get(&amp;self, page_id: u32) -&gt; Option&lt;&amp;Page&gt; { ... }
+    pub fn get_mut(&amp;mut self, page_id: u32) -&gt; Option&lt;&amp;mut Page&gt; { ... }
+    pub fn contains(&amp;self, page_id: u32) -&gt; bool { ... }
+}
+<span class="boring">}</span></code></pre>
+<h3 id="usage-pattern-for-leaf-splits"><a class="header" href="#usage-pattern-for-leaf-splits">Usage pattern for leaf splits</a></h3>
+<p>A split produces a <code>LeafSplit</code> containing a new right <code>LeafPage</code>. The caller inserts it into the pager:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let split = leaf.insert_or_split(key, val, pager.alloc_page_id())?;
+if let Some(s) = split {
+    pager.insert_page(s.right_page.into_page());
+    // then insert separator_key into the parent internal node
+}
+<span class="boring">}</span></code></pre>
+<h2 id="limitations"><a class="header" href="#limitations">Limitations</a></h2>
+<p>The current pager is a development scaffold:</p>
+<ul>
+<li><strong>No disk I/O.</strong> All pages live in process memory and are lost on exit.</li>
+<li><strong>No eviction.</strong> Pages are never freed; memory grows without bound.</li>
+<li><strong>No write-ahead log.</strong> There is no crash recovery.</li>
+</ul>
+<p>Future work will replace the <code>HashMap</code> with a buffer pool that reads and writes 8 KB pages to a file, with a WAL for durability.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
+<p>Benchmarks are written with <a href="https://bheisler.github.io/criterion.rs/book/">Criterion</a> and live in <code>benches/page_bench.rs</code>. They measure the <code>Page</code> layer directly.</p>
+<h2 id="running-benchmarks"><a class="header" href="#running-benchmarks">Running benchmarks</a></h2>
+<pre><code class="language-bash">cargo bench
+</code></pre>
+<p>HTML reports are written to <code>target/criterion/</code>.</p>
+<h2 id="benchmark-groups"><a class="header" href="#benchmark-groups">Benchmark groups</a></h2>
+<h3 id="page_put"><a class="header" href="#page_put"><code>page_put</code></a></h3>
+<p>Measures how many key-value pairs can be inserted into a single fresh page before it fills up. Runs for value sizes of 16, 64, and 256 bytes.</p>
+<pre><code>page_put/16    — small values, many records per page
+page_put/64    — moderate values
+page_put/256   — larger values, fewer records per page
+</code></pre>
+<h3 id="page_get"><a class="header" href="#page_get"><code>page_get</code></a></h3>
+<p>Pre-fills a page with 32, 128, or 256 records, then measures lookup latency for both a key that exists (hit) and a key that does not (miss).</p>
+<pre><code>page_get/hit/32    page_get/miss/32
+page_get/hit/128   page_get/miss/128
+page_get/hit/256   page_get/miss/256
+</code></pre>
+<p>Both cases exercise the binary search over the slot array. Miss searches terminate at an insertion point without finding a tuple.</p>
+<h3 id="page_remove"><a class="header" href="#page_remove"><code>page_remove</code></a></h3>
+<p>Inserts <code>n</code> records, then removes all of them in order. Measures the cost of tombstoning and slot-array compaction under sustained deletes.</p>
+<pre><code>page_remove/32
+page_remove/128
+page_remove/256
+</code></pre>
+<h3 id="page_compaction_threshold"><a class="header" href="#page_compaction_threshold"><code>page_compaction_threshold</code></a></h3>
+<p>Tests the effect of the dead-tuple compaction threshold on a write-heavy workload:</p>
+<ol>
+<li>Insert up to 500 records (256-byte values).</li>
+<li>Delete 350 of them.</li>
+<li>Refill with new records (128-byte values) and count how many fit.</li>
+</ol>
+<p>Runs at thresholds of 25%, 50%, and 75%.</p>
+<pre><code>page_compaction_threshold/25%
+page_compaction_threshold/50%
+page_compaction_threshold/75%
+</code></pre>
+<p>A lower threshold means more frequent compaction, recovering space sooner at the cost of more rebuild work per operation.</p>
+<h3 id="page_mixed_random_churn"><a class="header" href="#page_mixed_random_churn"><code>page_mixed_random_churn</code></a></h3>
+<p>A realistic workload benchmark:</p>
+<ol>
+<li>Insert 200 records with 8-byte values.</li>
+<li>Perform 100,000 random updates.</li>
+<li>Perform 100,000 random deletes.</li>
+<li>Perform 100,000 random gets and count hits.</li>
+</ol>
+<p>Compaction threshold is set to 50%. This benchmark captures amortized compaction costs under churn.</p>
+<pre><code>page_mixed_random_churn/insert200_update100k_delete100k_get100k
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="roadmap"><a class="header" href="#roadmap">Roadmap</a></h1>
+<p><code>simpledb</code> is a work-in-progress. The storage primitives are solid; the higher-level B-tree and durability layers are next.</p>
+<h2 id="b-tree-internal-nodes"><a class="header" href="#b-tree-internal-nodes">B-tree internal nodes</a></h2>
+<p>Leaf pages and splits are implemented, but there are no internal (non-leaf) nodes yet. <code>btree/tree.rs</code> holds only a stub:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct BTree {
+    root_page_id: u32,
+    pager: Pager,
+}
+<span class="boring">}</span></code></pre>
+<p>What needs to be added:</p>
+<ul>
+<li>An <code>InternalPage</code> type that stores separator keys and child page IDs.</li>
+<li><code>BTree::insert</code> — walk the tree, find the correct leaf, call <code>insert_or_split</code>, and propagate the separator key up if a split occurred.</li>
+<li><code>BTree::get</code> — traverse internal nodes to reach the right leaf.</li>
+<li><code>BTree::remove</code> — delete from a leaf; handle underflow (merge or redistribute).</li>
+<li><code>BTree::range_scan</code> — start at the left-most matching leaf and follow sibling pointers.</li>
+</ul>
+<h2 id="disk-io"><a class="header" href="#disk-io">Disk I/O</a></h2>
+<p>The <code>Pager</code> currently stores pages in a <code>HashMap</code>. To make the database persistent:</p>
+<ul>
+<li>Replace the <code>HashMap</code> with a buffer pool that maps page IDs to positions in a file.</li>
+<li>Implement page eviction (e.g. clock or LRU) to bound memory usage.</li>
+<li>Read 8 KB pages from disk on cache miss; write dirty pages on eviction or checkpoint.</li>
+</ul>
+<h2 id="write-ahead-log-wal"><a class="header" href="#write-ahead-log-wal">Write-ahead log (WAL)</a></h2>
+<p>For crash recovery:</p>
+<ul>
+<li>Log every modification before applying it to the page.</li>
+<li>On startup, replay the log to bring pages to a consistent state.</li>
+<li>Implement checkpointing to truncate the log.</li>
+</ul>
+<h2 id="concurrency"><a class="header" href="#concurrency">Concurrency</a></h2>
+<ul>
+<li>Page-level latches (read/write locks) for multi-reader, single-writer access.</li>
+<li>B-tree latch-coupling (crabbing) for concurrent tree traversal.</li>
+</ul>
+<h2 id="query-layer"><a class="header" href="#query-layer">Query layer</a></h2>
+<ul>
+<li>A simple SQL-like parser and planner on top of the B-tree.</li>
+<li>Support for table schemas, typed columns, and basic predicates.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>
