@@ -21,6 +21,7 @@
 - [Key Abstraction](btree/key.md)
 - [Leaf Pages](btree/leaf.md)
 - [Leaf Splits](btree/split.md)
+- [Internal Pages](btree/internal.md)
 
 # Pager
 
