@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c3400d01.js";
+            window.path_to_searchindex_js = "../searchindex-99e30d83.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-a9e74398.js"></script>
+        <script src="../toc-9abe0289.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,68 +178,132 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="leaf-pages"><a class="header" href="#leaf-pages">Leaf Pages</a></h1>
-<p>A B-tree leaf page holds sorted key-value pairs. In <code>simpledb</code> the leaf layer is a thin wrapper around <code>Page</code> that adds the B-tree-specific concept of a sibling pointer and the split operation.</p>
-<h2 id="types"><a class="header" href="#types">Types</a></h2>
-<h3 id="leafpage--owned-leaf"><a class="header" href="#leafpage--owned-leaf"><code>LeafPage</code> — owned leaf</a></h3>
-<p><code>LeafPage</code> owns a <code>Page</code> and exposes read-only operations.</p>
+<h2 id="what-is-a-leaf-page-and-why-does-it-exist"><a class="header" href="#what-is-a-leaf-page-and-why-does-it-exist">What is a leaf page, and why does it exist?</a></h2>
+<p>A B+ tree is built to answer one question fast: <em>“given a key, find its value.”</em></p>
+<p>The tree has two kinds of nodes:</p>
+<ul>
+<li><strong>Internal nodes</strong> — routers. They hold keys and pointers to children. No actual data.</li>
+<li><strong>Leaf nodes</strong> — the real thing. They hold the actual key-value pairs.</li>
+</ul>
+<p>Every single piece of data you ever stored lives in a leaf page. Internal pages are just signposts pointing you toward the right leaf. If you removed every internal page, your data would still be intact — just harder to find.</p>
+<p>In <code>simpledb</code> a leaf page is a thin wrapper around a <code>Page</code> (the slotted 8KB buffer you already know). The wrapper adds two B-tree-specific ideas: a <strong>sibling pointer</strong> for range scans, and <strong>split logic</strong> for when the page fills up.</p>
+<hr>
+<h2 id="the-two-types"><a class="header" href="#the-two-types">The two types</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub struct LeafPage {
+</span>pub struct LeafPage {       // owns the page
     page: Page,
 }
-<span class="boring">}</span></code></pre>
-<p>Key methods:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>impl LeafPage {
-    pub fn new(page_id: u32) -&gt; Self { ... }
-    pub fn from_page(p: Page) -&gt; Self { ... }
-    pub fn into_page(self) -&gt; Page { ... }
 
-    pub fn get(&amp;self, key: &amp;[u8]) -&gt; Option&lt;&amp;[u8]&gt; { ... }
-    pub fn slot_count(&amp;self) -&gt; u16 { ... }
-    pub fn key_val_at(&amp;self, slot_id: usize) -&gt; Option&lt;(&amp;[u8], &amp;[u8])&gt; { ... }
-    pub fn entries(&amp;self) -&gt; Vec&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt; { ... }
-
-    pub fn page_id(&amp;self) -&gt; u32 { ... }
-    pub fn next_leaf_page_id(&amp;self) -&gt; Option&lt;u32&gt; { ... }
-}
-<span class="boring">}</span></code></pre>
-<h3 id="leafpagemuta--borrowed-mutable-leaf"><a class="header" href="#leafpagemuta--borrowed-mutable-leaf"><code>LeafPageMut&lt;'a&gt;</code> — borrowed mutable leaf</a></h3>
-<p><code>LeafPageMut&lt;'a&gt;</code> holds a <code>&amp;'a mut Page</code> for mutation. This lifetime-based design lets the <code>BTree</code> own the pages through the <code>Pager</code> while giving the leaf layer a temporary mutable view.</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub struct LeafPageMut&lt;'a&gt; {
+pub struct LeafPageMut&lt;'a&gt; { // borrows the page mutably
     page: &amp;'a mut Page,
 }
 <span class="boring">}</span></code></pre>
-<p>Additional write methods:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>impl&lt;'a&gt; LeafPageMut&lt;'a&gt; {
-    pub fn insert(&amp;mut self, key: &amp;[u8], val: &amp;[u8])
-        -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, &amp;'static str&gt; { ... }
-    pub fn remove(&amp;mut self, key: &amp;[u8]) -&gt; Option&lt;Vec&lt;u8&gt;&gt; { ... }
-    pub fn set_next_leaf_page_id(&amp;mut self, next: Option&lt;u32&gt;) { ... }
-    pub fn insert_or_split(...) -&gt; Result&lt;Option&lt;LeafSplit&gt;, &amp;'static str&gt; { ... }
-}
-<span class="boring">}</span></code></pre>
-<h3 id="leafsplit"><a class="header" href="#leafsplit"><code>LeafSplit</code></a></h3>
-<p>Returned when <code>insert_or_split</code> decides the page must split:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub struct LeafSplit {
-    pub separator_key: Vec&lt;u8&gt;,  // first key of the right page
-    pub right_page: LeafPage,    // the newly created right leaf
-}
-<span class="boring">}</span></code></pre>
-<p>The caller (eventually the <code>BTree</code>) is responsible for storing the <code>right_page</code> in the pager and inserting <code>separator_key</code> into the parent internal node.</p>
-<h2 id="sibling-pointer-chain"><a class="header" href="#sibling-pointer-chain">Sibling pointer chain</a></h2>
-<p>Leaf pages form a singly-linked list via <code>next_leaf_page_id</code>. This enables efficient forward range scans without traversing the tree from the root.</p>
-<pre><code>Page 1  ──next──►  Page 3  ──next──►  Page 5  ──next──►  None
-[k00..k02]         [k03..k05]         [k06..k08]
+<p>Why two types instead of one?</p>
+<p>When the B-tree is running, pages live inside the <code>Pager</code> (a HashMap of page IDs → Pages). The pager <em>owns</em> all pages. To mutate a page, you borrow it from the pager with <code>get_mut()</code>, which gives you a <code>&amp;mut Page</code>. You can’t also <em>own</em> that page — Rust won’t let you have both.</p>
+<p>So the split is:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>When you use it</th><th>Owns the page?</th></tr>
+</thead>
+<tbody>
+<tr><td><code>LeafPage</code></td><td>Reading, or just created a page not yet in pager</td><td>Yes</td></tr>
+<tr><td><code>LeafPageMut&lt;'a&gt;</code></td><td>Mutating a page that lives in the pager</td><td>No, borrows it</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>LeafPage</code> is used in split results — the new right page is handed back to the caller as an owned value, ready to be inserted into the pager.</p>
+<p><code>LeafPageMut</code> is used when the tree walks down to a leaf to insert or delete — the page already lives in the pager and you just borrow it temporarily.</p>
+<hr>
+<h2 id="what-a-leaf-page-looks-like"><a class="header" href="#what-a-leaf-page-looks-like">What a leaf page looks like</a></h2>
+<p>A leaf page IS a <code>Page</code>. That means it has the same slotted layout:</p>
+<pre><code>byte 0                                                        byte 8191
+┌──────────────────────┬──────────────────────┬──────┬───────────────────┐
+│ Header (20 B)        │ Slot array           │ free │  Tuple region     │
+│ magic                │ [off0][off1][off2]   │      │  [val2][val1][val0]│
+│ page_id              │  sorted by key ───►  │      │  ◄─── grows left  │
+│ slot_count           │                      │      │                   │
+│ free_start           │                      │      │                   │
+│ free_end             │                      │      │                   │
+│ dead_bytes           │                      │      │                   │
+│ next_leaf_page_id ●──┼──────────────────────┼──────┼───► sibling leaf  │
+└──────────────────────┴──────────────────────┴──────┴───────────────────┘
 </code></pre>
-<p>The pointer is stored in the page header at offset 16 (4 bytes). <code>0</code> means no next sibling.</p>
+<p>The only field that a leaf page uses <em>differently</em> from a plain <code>Page</code> is <code>next_leaf_page_id</code>. For a plain <code>Page</code> it’s just a header field. For a leaf page it’s the <strong>sibling pointer</strong> — the chain that links all leaves together left to right.</p>
+<hr>
+<h2 id="entries--and-why-tombstones-matter-here"><a class="header" href="#entries--and-why-tombstones-matter-here"><code>entries()</code> — and why tombstones matter here</a></h2>
+<p>Both <code>LeafPage</code> and <code>LeafPageMut</code> have an <code>entries()</code> method:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn entries(&amp;self) -&gt; Vec&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt; {
+    let mut out = Vec::with_capacity(self.slot_count() as usize);
+    for i in 0..self.slot_count() as usize {
+        if let Some((k, v)) = self.key_val_at(i) {  // None if tombstoned
+            out.push((k.to_vec(), v.to_vec()));
+        }
+    }
+    out
+}
+<span class="boring">}</span></code></pre>
+<p><code>key_val_at</code> returns <code>None</code> for tombstoned tuples. This filter is <strong>critical</strong> in split logic.</p>
+<p>When a page is full and needs to split, the code calls <code>self.entries()</code> to gather all the data it will redistribute. If it accidentally included tombstoned entries, it would write ghost keys into the new pages — keys that <code>get</code> would skip but that would occupy space and corrupt the sorted order.</p>
+<p>Dead entries stay physically on the page but are invisible to <code>entries()</code>, and therefore invisible to any split.</p>
+<hr>
+<h2 id="the-sibling-chain"><a class="header" href="#the-sibling-chain">The sibling chain</a></h2>
+<p>All leaf pages form a singly-linked list ordered by key:</p>
+<pre><code>Page 2             Page 5             Page 9
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ alice        │   │ eve          │   │ paul         │
+│ bob          │──►│ henry        │──►│ zara         │──► None
+│ carol        │   │ iris         │   │              │
+└──────────────┘   └──────────────┘   └──────────────┘
+next=5             next=9             next=0 (None)
+</code></pre>
+<p>The pointer is stored in 4 bytes at offset 16 of the page header. <code>0</code> means no next sibling.</p>
+<p><strong>Why this chain exists:</strong></p>
+<p>To do a range scan (<code>WHERE key BETWEEN 'bob' AND 'paul'</code>), you:</p>
+<ol>
+<li>Walk the tree from the root to find the leaf containing <code>'bob'</code>.</li>
+<li>Start reading from there.</li>
+<li>Follow <code>next_leaf_page_id</code> pointers until you pass <code>'paul'</code>.</li>
+</ol>
+<p>Without this chain you’d have to go back up to the root and walk down again for every leaf — expensive. With the chain it’s a simple pointer follow.</p>
+<hr>
+<h2 id="method-reference"><a class="header" href="#method-reference">Method reference</a></h2>
+<h3 id="on-leafpage-read-only"><a class="header" href="#on-leafpage-read-only">On <code>LeafPage</code> (read-only)</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new(page_id)</code></td><td>Allocates a fresh empty leaf</td></tr>
+<tr><td><code>from_page(p)</code></td><td>Wraps an existing <code>Page</code> as a leaf</td></tr>
+<tr><td><code>into_page(self)</code></td><td>Unwraps back to <code>Page</code> (e.g. before inserting into pager)</td></tr>
+<tr><td><code>get(key)</code></td><td>Binary search → value bytes, or <code>None</code></td></tr>
+<tr><td><code>slot_count()</code></td><td>Number of live entries</td></tr>
+<tr><td><code>key_val_at(i)</code></td><td>Key and value at slot index <code>i</code>, or <code>None</code> if tombstoned</td></tr>
+<tr><td><code>entries()</code></td><td>All live entries as owned <code>Vec&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt;</code></td></tr>
+<tr><td><code>page_id()</code></td><td>The page’s ID</td></tr>
+<tr><td><code>next_leaf_page_id()</code></td><td>The right sibling’s page ID, or <code>None</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="additional-on-leafpagemut-read--write"><a class="header" href="#additional-on-leafpagemut-read--write">Additional on <code>LeafPageMut</code> (read + write)</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>insert(key, val)</code></td><td>Delegates to <code>Page::put</code></td></tr>
+<tr><td><code>remove(key)</code></td><td>Delegates to <code>Page::remove</code></td></tr>
+<tr><td><code>set_next_leaf_page_id(next)</code></td><td>Wires or updates the sibling pointer</td></tr>
+<tr><td><code>insert_or_split(key, val, new_id)</code></td><td>Insert, splitting the page if full — see <a href="split.html">Leaf Splits</a></td></tr>
+</tbody>
+</table>
+</div>
 
                     </main>
 

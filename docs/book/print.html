@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c3400d01.js";
+            window.path_to_searchindex_js = "searchindex-99e30d83.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-a9e74398.js"></script>
+        <script src="toc-9abe0289.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -397,43 +397,214 @@ fn find_slot(&amp;self, key: &amp;[u8]) -&gt; SearchResult {
 <span class="boring">}</span></code></pre>
 <p>The returned slice borrows directly from the page buffer — no copy.</p>
 <h2 id="put"><a class="header" href="#put"><code>put</code></a></h2>
-<p>Handles two cases depending on whether the key already exists.</p>
-<p><strong>New key (insert):</strong></p>
-<ol>
-<li>Check free space ≥ <code>tuple_len + SLOT_SIZE</code>; compact dead tuples if needed.</li>
-<li><code>alloc_tuple(len)</code> — reserve bytes at the end of the tuple region.</li>
-<li><code>write_tuple(off, ...)</code> — serialize the tombstone flag, lengths, key, and value.</li>
-<li><code>alloc_slot()</code> — increment <code>slot_count</code> and advance <code>free_start</code>.</li>
-<li>Shift all slots at positions ≥ <code>pos</code> right by one.</li>
-<li>Write the new slot at position <code>pos</code>.</li>
-</ol>
-<p><strong>Existing key (overwrite):</strong></p>
-<ol>
-<li>Check free space ≥ <code>tuple_len</code>; compact if needed.</li>
-<li>Read the old tuple bytes (to return as the old value).</li>
-<li>Tombstone the old tuple (<code>data[old_off] = 1</code>) and account for its dead bytes.</li>
-<li>Allocate and write the new tuple.</li>
-<li>Update the existing slot to point to the new tuple offset.</li>
-<li>Trigger compaction if the threshold is crossed.</li>
-</ol>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>pub fn put(&amp;mut self, key: &amp;[u8], val: &amp;[u8])
     -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, &amp;'static str&gt;
 <span class="boring">}</span></code></pre>
 <p>Returns <code>Ok(None)</code> on insert, <code>Ok(Some(old_val))</code> on overwrite, <code>Err("page full")</code> when there is no space even after compaction.</p>
-<h2 id="remove"><a class="header" href="#remove"><code>remove</code></a></h2>
+<p><code>put</code> has two completely different code paths depending on whether <code>find_slot</code> returns <code>Found</code> or <code>NotFound</code>.</p>
+<hr>
+<h3 id="case-1--new-key-insert"><a class="header" href="#case-1--new-key-insert">Case 1 — New key (insert)</a></h3>
+<h4 id="what-needs-to-fit"><a class="header" href="#what-needs-to-fit">What needs to fit</a></h4>
+<p>A new key needs room for <strong>two things simultaneously</strong>:</p>
+<pre><code>free space needed = tuple_bytes + SLOT_SIZE (2 bytes)
+                    └─ the actual data ─┘   └─ the new pointer entry ─┘
+</code></pre>
+<p>The slot array grows from the left; the tuple region grows from the right. Both eat from the same free gap in the middle. If <code>free_space_bytes &lt; tuple_len + 2</code>, the page is full.</p>
+<h4 id="page-state-before-insert-2-slots-keys-bob-and-eve"><a class="header" href="#page-state-before-insert-2-slots-keys-bob-and-eve">Page state before insert (2 slots, keys “bob” and “eve”)</a></h4>
+<pre><code>byte 0                                                        byte 8191
+┌────────────────────┬──────────┬──────────┬───────┬─────────────────────┐
+│ Header (20 B)      │slot[0]=… │slot[1]=… │ free  │  …[eve]…  [bob]…   │
+│ slot_count=2       │ (2 B)    │ (2 B)    │       │                     │
+│ free_start=24      │          │          │       │                     │
+│ free_end=8120      │          │          │       │                     │
+└────────────────────┴──────────┴──────────┴───────┴─────────────────────┘
+                     ▲                     ▲       ▲
+                  byte 20               byte 24  byte 8120
+                  (= HEADER_SIZE)       free_start  free_end
+</code></pre>
+<h4 id="inserting-key-carol"><a class="header" href="#inserting-key-carol">Inserting key “carol”</a></h4>
+<p><code>find_slot("carol")</code> returns <code>NotFound(1)</code> — it belongs between slot<a href="page/&quot;bob&quot;">0</a> and slot<a href="page/&quot;eve&quot;">1</a>.</p>
+<p><strong>Step 1 — <code>alloc_tuple</code></strong>: subtract tuple length from <code>free_end</code>, return new offset.</p>
+<pre><code>free_end was 8120
+tuple for "carol" = 1 + 2 + 2 + 5 + val_len bytes
+new free_end      = 8120 - tuple_len
+</code></pre>
+<p>The tuple bytes are written at the new <code>free_end</code> offset:</p>
+<pre><code>┌────────────────────┬────────┬────────┬───────┬──────────────────────────────┐
+│ Header             │slot[0] │slot[1] │ free  │  [carol tuple][eve][bob]     │
+│ free_end updated   │        │        │       │  ▲                           │
+└────────────────────┴────────┴────────┴───────┴──┼───────────────────────────┘
+                                                   new free_end
+</code></pre>
+<p><strong>Step 2 — <code>alloc_slot</code></strong>: increment <code>slot_count</code> from 2 → 3, advance <code>free_start</code> from 24 → 26.</p>
+<pre><code>┌────────────────────┬────────┬────────┬────────┬──────┬───────────────────────┐
+│ Header             │slot[0] │slot[1] │slot[2] │ free │  [carol][eve][bob]    │
+│ slot_count=3       │        │        │(empty) │      │                       │
+│ free_start=26      │        │        │        │      │                       │
+└────────────────────┴────────┴────────┴────────┴──────┴───────────────────────┘
+</code></pre>
+<p><strong>Step 3 — shift slots right</strong>: slots at positions ≥ 1 (the insertion point) shift one position to the right to open the gap.</p>
+<pre><code>Before shift:  slot[0]="bob"  slot[1]="eve"  slot[2]=empty
+After shift:   slot[0]="bob"  slot[1]=empty  slot[2]="eve"
+</code></pre>
+<p><strong>Step 4 — write slot</strong>: write the new tuple’s offset into <code>slot[1]</code>.</p>
+<pre><code>slot[0] → bob tuple offset
+slot[1] → carol tuple offset   ← new
+slot[2] → eve tuple offset
+</code></pre>
+<p>Final state — slots are sorted, tuple region has all three tuples packed from the right:</p>
+<pre><code>┌────────────────────┬────────┬────────┬────────┬──────┬──────────────────────┐
+│ Header             │slot[0] │slot[1] │slot[2] │ free │ [carol]  [eve] [bob] │
+│ slot_count=3       │→bob    │→carol  │→eve    │      │                      │
+│ free_start=26      │        │        │        │      │                      │
+└────────────────────┴────────┴────────┴────────┴──────┴──────────────────────┘
+</code></pre>
+<blockquote>
+<p>The tuples are <strong>not sorted</strong> in the tuple region — only the <strong>slot array</strong> is sorted. Binary search on slots is what makes lookups O(log n), not physical ordering of tuple bytes.</p>
+</blockquote>
+<hr>
+<h3 id="case-2--existing-key-overwrite"><a class="header" href="#case-2--existing-key-overwrite">Case 2 — Existing key (overwrite)</a></h3>
+<p>This is more subtle. The old tuple cannot be resized in place because tuples are variable-length and packed tightly. Instead:</p>
 <ol>
-<li>Tombstones the tuple at the found slot.</li>
-<li>Shifts all slots after position <code>i</code> left by one (closing the gap).</li>
-<li>Decrements <code>slot_count</code> and retreats <code>free_start</code>.</li>
-<li>Triggers compaction if the threshold is crossed.</li>
+<li>The old tuple is <strong>tombstoned</strong> (its first byte is set to <code>1</code>).</li>
+<li>A brand-new tuple is allocated at the current <code>free_end</code>.</li>
+<li>The existing slot is updated to point to the new offset.</li>
 </ol>
+<p>The old bytes remain on the page as dead space until compaction.</p>
+<h4 id="why-not-just-edit-the-old-tuple-in-place"><a class="header" href="#why-not-just-edit-the-old-tuple-in-place">Why not just edit the old tuple in place?</a></h4>
+<p>If the new value is a different size, the tuple would overlap its neighbour. Slotted pages avoid this by always appending new tuples at the free end — the slot redirects the pointer, so no other slot is affected.</p>
+<h4 id="page-state-before-overwrite-key-bob-value-old"><a class="header" href="#page-state-before-overwrite-key-bob-value-old">Page state before overwrite (key “bob”, value “old”)</a></h4>
+<pre><code>┌────────────┬────────┬───────┬────────────────────────────────────────┐
+│ Header     │slot[0] │ free  │          [bob|"old"]                   │
+│ dead=0     │→7900   │       │          ▲ offset 7900                 │
+└────────────┴────────┴───────┴──────────┼───────────────────────────-─┘
+                                         tombstone=0 here
+</code></pre>
+<h4 id="overwriting-bob-with-value-new-longer-value"><a class="header" href="#overwriting-bob-with-value-new-longer-value">Overwriting “bob” with value “new-longer-value”</a></h4>
+<p><strong>Step 1 — tombstone the old tuple</strong>: set <code>data[7900] = 1</code>, add old tuple’s total length to <code>dead_bytes</code> counter.</p>
+<pre><code>offset 7900: tombstone byte set to 1
+dead_bytes counter += old_tuple_total_len
+</code></pre>
+<p><strong>Step 2 — <code>alloc_tuple</code></strong>: carve out space for the new tuple at the new <code>free_end</code>.</p>
+<pre><code>new tuple written at (free_end - new_tuple_len)
+</code></pre>
+<p><strong>Step 3 — update slot</strong>: <code>slot[0]</code> now points to the new offset instead of 7900.</p>
+<pre><code>┌────────────┬────────┬───────┬──────────────────────────────────────────────┐
+│ Header     │slot[0] │ free  │  [bob|"new-longer-value"]  [☠ bob|"old"]    │
+│ dead=N     │→7860   │       │  ▲ new offset              ▲ dead, offset 7900│
+└────────────┴────────┴───────┴──┼──────────────────────────────────────────-┘
+                                  7860
+</code></pre>
+<p>The old bytes at 7900 are now unreachable from any slot — they are invisible to <code>get</code> — but they still physically occupy space. <code>dead_bytes</code> tracks this. When <code>dead_bytes / tuple_region_used_bytes &gt;= dead_tuple_compact_percent</code>, compaction fires and sweeps them out.</p>
+<h4 id="why-check-free-space-before-compaction-then-again-after"><a class="header" href="#why-check-free-space-before-compaction-then-again-after">Why check free space before compaction, then again after?</a></h4>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>if self.free_space_bytes() &lt; needed {
+    self.maybe_compact_dead_tuples()?;   // try to reclaim dead space
+    if self.free_space_bytes() &lt; needed { // check again — compaction may not have helped
+        return Err("page full");
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>Compaction only helps if there are enough dead bytes to reclaim. If the page is genuinely full of live data, compaction does nothing and the second check correctly returns <code>"page full"</code>.</p>
+<h2 id="remove"><a class="header" href="#remove"><code>remove</code></a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>pub fn remove(&amp;mut self, key: &amp;[u8]) -&gt; Option&lt;Vec&lt;u8&gt;&gt;
 <span class="boring">}</span></code></pre>
 <p>Returns the old value, or <code>None</code> if the key was not found.</p>
+<p><code>remove</code> does <strong>not</strong> free the tuple’s bytes immediately. It tombstones the tuple in place and closes the gap in the slot array. The dead bytes are reclaimed later by compaction.</p>
+<hr>
+<h3 id="what-remove-must-do"><a class="header" href="#what-remove-must-do">What remove must do</a></h3>
+<p>Two separate data structures need to be updated:</p>
+<ol>
+<li><strong>The tuple</strong> (in the tuple region) — marked dead so <code>get</code> skips it.</li>
+<li><strong>The slot array</strong> (near the header) — the slot pointing to this tuple is physically removed and the array is closed up, keeping it gap-free and sorted.</li>
+</ol>
+<hr>
+<h3 id="starting-state--3-slots-keys-bob-carol-eve"><a class="header" href="#starting-state--3-slots-keys-bob-carol-eve">Starting state — 3 slots, keys “bob”, “carol”, “eve”</a></h3>
+<pre><code>byte 0                                                              byte 8191
+┌────────────┬────────┬────────┬────────┬──────┬──────────────────────────────┐
+│ Header     │slot[0] │slot[1] │slot[2] │ free │  [carol]      [eve]   [bob]  │
+│ slot_count=3│→bob   │→carol  │→eve    │      │  ▲ off=7950   ▲7970   ▲7990  │
+│ free_start=26│      │        │        │      │                               │
+│ free_end=7950│      │        │        │      │                               │
+│ dead=0     │        │        │        │      │                               │
+└────────────┴────────┴────────┴────────┴──────┴───────────────────────────────┘
+</code></pre>
+<h3 id="removing-key-carol-slot-index-1"><a class="header" href="#removing-key-carol-slot-index-1">Removing key “carol” (slot index 1)</a></h3>
+<p><code>find_slot("carol")</code> returns <code>Found(1)</code>.</p>
+<hr>
+<p><strong>Step 1 — capture the old value</strong></p>
+<p>Before touching anything, read the value bytes from the tuple at <code>slot[1]</code>’s offset and copy them into a <code>Vec&lt;u8&gt;</code>. This is what the function returns to the caller.</p>
+<pre><code>old_val = read_tuple_val(7950).to_vec()   // copy made here
+</code></pre>
+<hr>
+<p><strong>Step 2 — tombstone the tuple</strong></p>
+<p>Set the first byte at offset 7950 to <code>1</code>. The tuple bytes still sit in the tuple region but are now invisible to any future <code>get</code> or scan.</p>
+<pre><code>data[7950] = 1    // tombstone flag
+
+Before: [0x00 | key_len | val_len | "carol" | value...]   tombstone=0 (live)
+After:  [0x01 | key_len | val_len | "carol" | value...]   tombstone=1 (dead)
+</code></pre>
+<p>Add the tuple’s total byte length to the <code>dead_bytes</code> counter in the header:</p>
+<pre><code>dead_bytes += 1 + 2 + 2 + key_len + val_len
+           = total size of the carol tuple
+</code></pre>
+<p>The page now looks like this — slot[1] still points to the dead tuple, but that is about to be fixed:</p>
+<pre><code>┌────────────┬────────┬────────┬────────┬──────┬──────────────────────────────┐
+│ Header     │slot[0] │slot[1] │slot[2] │ free │  [☠carol]     [eve]   [bob]  │
+│ dead=N     │→bob    │→carol  │→eve    │      │  tombstone=1                  │
+└────────────┴────────┴────────┴────────┴──────┴───────────────────────────────┘
+</code></pre>
+<hr>
+<p><strong>Step 3 — shift slots left</strong></p>
+<p>Every slot after position 1 shifts one position to the left, overwriting the removed slot and closing the gap.</p>
+<pre><code>Before:  slot[0]→bob  slot[1]→carol  slot[2]→eve
+                            ↑ removing this
+After:   slot[0]→bob  slot[1]→eve    slot[2]→(stale, will be ignored)
+</code></pre>
+<p>The loop runs: <code>for j in 2..3 { write_slot(j-1, read_slot(j)) }</code>, which copies slot[2] into slot[1].</p>
+<hr>
+<p><strong>Step 4 — update header counters</strong></p>
+<pre><code>slot_count: 3 → 2
+free_start: 26 → 24   (= HEADER_SIZE + slot_count * SLOT_SIZE = 20 + 2*2)
+</code></pre>
+<p><code>free_start</code> retreats by 2 bytes — the slot array is now one entry shorter, giving back 2 bytes to the free gap. The stale value in the old slot[2] position is now inside the free region and will be overwritten by the next insert.</p>
+<p>Final state:</p>
+<pre><code>byte 0                                                              byte 8191
+┌────────────┬────────┬────────┬──────────┬──────────────────────────────────┐
+│ Header     │slot[0] │slot[1] │   free   │  [☠carol]     [eve]   [bob]      │
+│ slot_count=2│→bob   │→eve    │          │  ▲ dead bytes here                │
+│ free_start=24│      │        │          │                                   │
+│ dead=N     │        │        │          │                                   │
+└────────────┴────────┴────────┴──────────┴───────────────────────────────────┘
+</code></pre>
+<hr>
+<h3 id="what-does-not-happen"><a class="header" href="#what-does-not-happen">What does NOT happen</a></h3>
+<p>The carol tuple bytes are <strong>not moved or erased</strong>. The tuple region still physically contains:</p>
+<pre><code>[☠carol bytes][eve bytes][bob bytes]
+</code></pre>
+<p>The free region did not grow — <code>free_end</code> is unchanged. The only space recovered immediately is the 2-byte slot. The carol tuple’s bytes remain as dead weight until compaction fires.</p>
+<hr>
+<h3 id="asymmetry-with-put"><a class="header" href="#asymmetry-with-put">Asymmetry with <code>put</code></a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th><code>put</code> (new key)</th><th><code>remove</code></th></tr>
+</thead>
+<tbody>
+<tr><td>Slot array</td><td>grows by 1 (shift right, write)</td><td>shrinks by 1 (shift left)</td></tr>
+<tr><td><code>free_start</code></td><td>advances by 2</td><td>retreats by 2</td></tr>
+<tr><td><code>free_end</code></td><td>retreats by tuple size</td><td><strong>unchanged</strong></td></tr>
+<tr><td>Tuple bytes</td><td>written at new <code>free_end</code></td><td>tombstoned in place</td></tr>
+<tr><td>Space recovered</td><td>n/a</td><td>only 2 bytes (the slot), rest waits for compaction</td></tr>
+</tbody>
+</table>
+</div>
+<p>This asymmetry is why the page can accumulate dead bytes: inserts move <code>free_end</code> in but removes never move it back out.</p>
 <h2 id="get_key_value_at_slot"><a class="header" href="#get_key_value_at_slot"><code>get_key_value_at_slot</code></a></h2>
 <p>Iterates slots by index (useful for scanning all entries):</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -631,72 +802,140 @@ key.len()    // usize — number of bytes
 <p><code>Display</code> formats as <code>Key([104, 101, 108, 108, 111])</code> (raw byte array).</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="leaf-pages"><a class="header" href="#leaf-pages">Leaf Pages</a></h1>
-<p>A B-tree leaf page holds sorted key-value pairs. In <code>simpledb</code> the leaf layer is a thin wrapper around <code>Page</code> that adds the B-tree-specific concept of a sibling pointer and the split operation.</p>
-<h2 id="types"><a class="header" href="#types">Types</a></h2>
-<h3 id="leafpage--owned-leaf"><a class="header" href="#leafpage--owned-leaf"><code>LeafPage</code> — owned leaf</a></h3>
-<p><code>LeafPage</code> owns a <code>Page</code> and exposes read-only operations.</p>
+<h2 id="what-is-a-leaf-page-and-why-does-it-exist"><a class="header" href="#what-is-a-leaf-page-and-why-does-it-exist">What is a leaf page, and why does it exist?</a></h2>
+<p>A B+ tree is built to answer one question fast: <em>“given a key, find its value.”</em></p>
+<p>The tree has two kinds of nodes:</p>
+<ul>
+<li><strong>Internal nodes</strong> — routers. They hold keys and pointers to children. No actual data.</li>
+<li><strong>Leaf nodes</strong> — the real thing. They hold the actual key-value pairs.</li>
+</ul>
+<p>Every single piece of data you ever stored lives in a leaf page. Internal pages are just signposts pointing you toward the right leaf. If you removed every internal page, your data would still be intact — just harder to find.</p>
+<p>In <code>simpledb</code> a leaf page is a thin wrapper around a <code>Page</code> (the slotted 8KB buffer you already know). The wrapper adds two B-tree-specific ideas: a <strong>sibling pointer</strong> for range scans, and <strong>split logic</strong> for when the page fills up.</p>
+<hr>
+<h2 id="the-two-types"><a class="header" href="#the-two-types">The two types</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub struct LeafPage {
+</span>pub struct LeafPage {       // owns the page
     page: Page,
 }
-<span class="boring">}</span></code></pre>
-<p>Key methods:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>impl LeafPage {
-    pub fn new(page_id: u32) -&gt; Self { ... }
-    pub fn from_page(p: Page) -&gt; Self { ... }
-    pub fn into_page(self) -&gt; Page { ... }
 
-    pub fn get(&amp;self, key: &amp;[u8]) -&gt; Option&lt;&amp;[u8]&gt; { ... }
-    pub fn slot_count(&amp;self) -&gt; u16 { ... }
-    pub fn key_val_at(&amp;self, slot_id: usize) -&gt; Option&lt;(&amp;[u8], &amp;[u8])&gt; { ... }
-    pub fn entries(&amp;self) -&gt; Vec&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt; { ... }
-
-    pub fn page_id(&amp;self) -&gt; u32 { ... }
-    pub fn next_leaf_page_id(&amp;self) -&gt; Option&lt;u32&gt; { ... }
-}
-<span class="boring">}</span></code></pre>
-<h3 id="leafpagemuta--borrowed-mutable-leaf"><a class="header" href="#leafpagemuta--borrowed-mutable-leaf"><code>LeafPageMut&lt;'a&gt;</code> — borrowed mutable leaf</a></h3>
-<p><code>LeafPageMut&lt;'a&gt;</code> holds a <code>&amp;'a mut Page</code> for mutation. This lifetime-based design lets the <code>BTree</code> own the pages through the <code>Pager</code> while giving the leaf layer a temporary mutable view.</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub struct LeafPageMut&lt;'a&gt; {
+pub struct LeafPageMut&lt;'a&gt; { // borrows the page mutably
     page: &amp;'a mut Page,
 }
 <span class="boring">}</span></code></pre>
-<p>Additional write methods:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>impl&lt;'a&gt; LeafPageMut&lt;'a&gt; {
-    pub fn insert(&amp;mut self, key: &amp;[u8], val: &amp;[u8])
-        -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, &amp;'static str&gt; { ... }
-    pub fn remove(&amp;mut self, key: &amp;[u8]) -&gt; Option&lt;Vec&lt;u8&gt;&gt; { ... }
-    pub fn set_next_leaf_page_id(&amp;mut self, next: Option&lt;u32&gt;) { ... }
-    pub fn insert_or_split(...) -&gt; Result&lt;Option&lt;LeafSplit&gt;, &amp;'static str&gt; { ... }
-}
-<span class="boring">}</span></code></pre>
-<h3 id="leafsplit"><a class="header" href="#leafsplit"><code>LeafSplit</code></a></h3>
-<p>Returned when <code>insert_or_split</code> decides the page must split:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub struct LeafSplit {
-    pub separator_key: Vec&lt;u8&gt;,  // first key of the right page
-    pub right_page: LeafPage,    // the newly created right leaf
-}
-<span class="boring">}</span></code></pre>
-<p>The caller (eventually the <code>BTree</code>) is responsible for storing the <code>right_page</code> in the pager and inserting <code>separator_key</code> into the parent internal node.</p>
-<h2 id="sibling-pointer-chain"><a class="header" href="#sibling-pointer-chain">Sibling pointer chain</a></h2>
-<p>Leaf pages form a singly-linked list via <code>next_leaf_page_id</code>. This enables efficient forward range scans without traversing the tree from the root.</p>
-<pre><code>Page 1  ──next──►  Page 3  ──next──►  Page 5  ──next──►  None
-[k00..k02]         [k03..k05]         [k06..k08]
+<p>Why two types instead of one?</p>
+<p>When the B-tree is running, pages live inside the <code>Pager</code> (a HashMap of page IDs → Pages). The pager <em>owns</em> all pages. To mutate a page, you borrow it from the pager with <code>get_mut()</code>, which gives you a <code>&amp;mut Page</code>. You can’t also <em>own</em> that page — Rust won’t let you have both.</p>
+<p>So the split is:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>When you use it</th><th>Owns the page?</th></tr>
+</thead>
+<tbody>
+<tr><td><code>LeafPage</code></td><td>Reading, or just created a page not yet in pager</td><td>Yes</td></tr>
+<tr><td><code>LeafPageMut&lt;'a&gt;</code></td><td>Mutating a page that lives in the pager</td><td>No, borrows it</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>LeafPage</code> is used in split results — the new right page is handed back to the caller as an owned value, ready to be inserted into the pager.</p>
+<p><code>LeafPageMut</code> is used when the tree walks down to a leaf to insert or delete — the page already lives in the pager and you just borrow it temporarily.</p>
+<hr>
+<h2 id="what-a-leaf-page-looks-like"><a class="header" href="#what-a-leaf-page-looks-like">What a leaf page looks like</a></h2>
+<p>A leaf page IS a <code>Page</code>. That means it has the same slotted layout:</p>
+<pre><code>byte 0                                                        byte 8191
+┌──────────────────────┬──────────────────────┬──────┬───────────────────┐
+│ Header (20 B)        │ Slot array           │ free │  Tuple region     │
+│ magic                │ [off0][off1][off2]   │      │  [val2][val1][val0]│
+│ page_id              │  sorted by key ───►  │      │  ◄─── grows left  │
+│ slot_count           │                      │      │                   │
+│ free_start           │                      │      │                   │
+│ free_end             │                      │      │                   │
+│ dead_bytes           │                      │      │                   │
+│ next_leaf_page_id ●──┼──────────────────────┼──────┼───► sibling leaf  │
+└──────────────────────┴──────────────────────┴──────┴───────────────────┘
 </code></pre>
-<p>The pointer is stored in the page header at offset 16 (4 bytes). <code>0</code> means no next sibling.</p>
+<p>The only field that a leaf page uses <em>differently</em> from a plain <code>Page</code> is <code>next_leaf_page_id</code>. For a plain <code>Page</code> it’s just a header field. For a leaf page it’s the <strong>sibling pointer</strong> — the chain that links all leaves together left to right.</p>
+<hr>
+<h2 id="entries--and-why-tombstones-matter-here"><a class="header" href="#entries--and-why-tombstones-matter-here"><code>entries()</code> — and why tombstones matter here</a></h2>
+<p>Both <code>LeafPage</code> and <code>LeafPageMut</code> have an <code>entries()</code> method:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn entries(&amp;self) -&gt; Vec&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt; {
+    let mut out = Vec::with_capacity(self.slot_count() as usize);
+    for i in 0..self.slot_count() as usize {
+        if let Some((k, v)) = self.key_val_at(i) {  // None if tombstoned
+            out.push((k.to_vec(), v.to_vec()));
+        }
+    }
+    out
+}
+<span class="boring">}</span></code></pre>
+<p><code>key_val_at</code> returns <code>None</code> for tombstoned tuples. This filter is <strong>critical</strong> in split logic.</p>
+<p>When a page is full and needs to split, the code calls <code>self.entries()</code> to gather all the data it will redistribute. If it accidentally included tombstoned entries, it would write ghost keys into the new pages — keys that <code>get</code> would skip but that would occupy space and corrupt the sorted order.</p>
+<p>Dead entries stay physically on the page but are invisible to <code>entries()</code>, and therefore invisible to any split.</p>
+<hr>
+<h2 id="the-sibling-chain"><a class="header" href="#the-sibling-chain">The sibling chain</a></h2>
+<p>All leaf pages form a singly-linked list ordered by key:</p>
+<pre><code>Page 2             Page 5             Page 9
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ alice        │   │ eve          │   │ paul         │
+│ bob          │──►│ henry        │──►│ zara         │──► None
+│ carol        │   │ iris         │   │              │
+└──────────────┘   └──────────────┘   └──────────────┘
+next=5             next=9             next=0 (None)
+</code></pre>
+<p>The pointer is stored in 4 bytes at offset 16 of the page header. <code>0</code> means no next sibling.</p>
+<p><strong>Why this chain exists:</strong></p>
+<p>To do a range scan (<code>WHERE key BETWEEN 'bob' AND 'paul'</code>), you:</p>
+<ol>
+<li>Walk the tree from the root to find the leaf containing <code>'bob'</code>.</li>
+<li>Start reading from there.</li>
+<li>Follow <code>next_leaf_page_id</code> pointers until you pass <code>'paul'</code>.</li>
+</ol>
+<p>Without this chain you’d have to go back up to the root and walk down again for every leaf — expensive. With the chain it’s a simple pointer follow.</p>
+<hr>
+<h2 id="method-reference"><a class="header" href="#method-reference">Method reference</a></h2>
+<h3 id="on-leafpage-read-only"><a class="header" href="#on-leafpage-read-only">On <code>LeafPage</code> (read-only)</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new(page_id)</code></td><td>Allocates a fresh empty leaf</td></tr>
+<tr><td><code>from_page(p)</code></td><td>Wraps an existing <code>Page</code> as a leaf</td></tr>
+<tr><td><code>into_page(self)</code></td><td>Unwraps back to <code>Page</code> (e.g. before inserting into pager)</td></tr>
+<tr><td><code>get(key)</code></td><td>Binary search → value bytes, or <code>None</code></td></tr>
+<tr><td><code>slot_count()</code></td><td>Number of live entries</td></tr>
+<tr><td><code>key_val_at(i)</code></td><td>Key and value at slot index <code>i</code>, or <code>None</code> if tombstoned</td></tr>
+<tr><td><code>entries()</code></td><td>All live entries as owned <code>Vec&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt;</code></td></tr>
+<tr><td><code>page_id()</code></td><td>The page’s ID</td></tr>
+<tr><td><code>next_leaf_page_id()</code></td><td>The right sibling’s page ID, or <code>None</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="additional-on-leafpagemut-read--write"><a class="header" href="#additional-on-leafpagemut-read--write">Additional on <code>LeafPageMut</code> (read + write)</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>insert(key, val)</code></td><td>Delegates to <code>Page::put</code></td></tr>
+<tr><td><code>remove(key)</code></td><td>Delegates to <code>Page::remove</code></td></tr>
+<tr><td><code>set_next_leaf_page_id(next)</code></td><td>Wires or updates the sibling pointer</td></tr>
+<tr><td><code>insert_or_split(key, val, new_id)</code></td><td>Insert, splitting the page if full — see <a href="#leaf-splits">Leaf Splits</a></td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="leaf-splits"><a class="header" href="#leaf-splits">Leaf Splits</a></h1>
-<p>When a leaf page is full, inserting a new key-value pair requires splitting the page into two. <code>LeafPageMut::insert_or_split</code> handles this transparently — the caller only needs to check whether a <code>LeafSplit</code> was returned.</p>
-<h2 id="algorithm"><a class="header" href="#algorithm">Algorithm</a></h2>
+<h2 id="the-problem"><a class="header" href="#the-problem">The problem</a></h2>
+<p>A leaf page is 8KB. You can only fit so many key-value pairs on it. Eventually it fills up and a new insert returns <code>Err("page full")</code>.</p>
+<p>You can’t just “make the page bigger” — pages are fixed-size. You have to split the one full page into two half-full pages, then tell the parent internal node about the new page so it can route traffic correctly.</p>
+<p>This is <code>insert_or_split</code>.</p>
+<hr>
+<h2 id="the-contract"><a class="header" href="#the-contract">The contract</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>pub fn insert_or_split(
@@ -706,71 +945,449 @@ key.len()    // usize — number of bytes
     new_right_page_id: u32,
 ) -&gt; Result&lt;Option&lt;LeafSplit&gt;, &amp;'static str&gt;
 <span class="boring">}</span></code></pre>
-<ol>
-<li><strong>Try a normal insert.</strong> If it succeeds, return <code>Ok(None)</code> — no split needed.</li>
-<li><strong>On “page full”</strong>, collect <em>all</em> current entries plus the new <code>(key, val)</code> into a <code>Vec</code>.</li>
-<li><strong>Sort</strong> the combined list by key.</li>
-<li><strong>Split at the midpoint</strong>: left half stays in the current page, right half goes to a new page with <code>new_right_page_id</code>.</li>
-<li><strong>Separator key</strong> = first key of the right page (<code>right_entries[0].0</code>).</li>
-<li><strong>Rebuild both pages</strong> from scratch using <code>Page::new</code> + <code>put</code> calls.</li>
-<li><strong>Wire sibling pointers</strong>:
 <ul>
-<li><code>left.next = new_right_page_id</code></li>
-<li><code>right.next = old_next</code> (preserves the existing chain)</li>
+<li>Returns <code>Ok(None)</code> → insert fit, nothing else to do.</li>
+<li>Returns <code>Ok(Some(split))</code> → page was full, split happened, caller must handle the split result.</li>
+<li>Returns <code>Err(e)</code> → something genuinely broken (not just full).</li>
 </ul>
-</li>
-<li>Overwrite <code>*self.page</code> with the new left page.</li>
-<li>Return <code>Ok(Some(LeafSplit { separator_key, right_page }))</code>.</li>
-</ol>
-<h2 id="before-and-after"><a class="header" href="#before-and-after">Before and after</a></h2>
-<pre><code>Before split (page 1 is full, inserting k04):
-
-Page 1: [k00, k01, k02, k03]  ──next──►  Page 5
-
-After split (new_right_page_id = 2):
-
-Page 1: [k00, k01]  ──next──►  Page 2: [k02, k03, k04]  ──next──►  Page 5
-                                ▲
-                          separator_key = k02
-</code></pre>
-<p>The caller receives the separator key and the right page. If there is a parent internal node, the separator key and a pointer to page 2 must be inserted there.</p>
-<h2 id="code"><a class="header" href="#code">Code</a></h2>
+<p>The caller must supply <code>new_right_page_id</code> upfront — a fresh page ID already allocated from the pager. The split function doesn’t talk to the pager itself; it just uses the ID to label the new right page.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>Err("page full") =&gt; {
-    let mut all = self.entries();
-    all.push((key.to_vec(), val.to_vec()));
-    all.sort_by(|a, b| a.0.cmp(&amp;b.0));
-
-    let mid = all.len() / 2;
-    let left_entries  = &amp;all[..mid];
-    let right_entries = &amp;all[mid..];
-
-    let separator_key = right_entries[0].0.clone();
-    let old_next = self.page.next_leaf_page_id();
-
-    let mut new_left  = Page::new(self.page.page_id());
-    let mut new_right = Page::new(new_right_page_id);
-
-    for (k, v) in left_entries  { new_left.put(k, v)?;  }
-    for (k, v) in right_entries { new_right.put(k, v)?; }
-
-    new_left.set_next_leaf_page_id(Some(new_right_page_id));
-    new_right.set_next_leaf_page_id(old_next);
-
-    *self.page = new_left;
-
-    Ok(Some(LeafSplit { separator_key, right_page: LeafPage::from_page(new_right) }))
+</span>pub struct LeafSplit {
+    pub separator_key: Vec&lt;u8&gt;,  // what to insert into the parent
+    pub right_page: LeafPage,    // the new right sibling (caller stores in pager)
 }
 <span class="boring">}</span></code></pre>
-<h2 id="split-invariants-enforced-by-tests"><a class="header" href="#split-invariants-enforced-by-tests">Split invariants (enforced by tests)</a></h2>
+<hr>
+<h2 id="step-by-step-walkthrough"><a class="header" href="#step-by-step-walkthrough">Step-by-step walkthrough</a></h2>
+<h3 id="starting-state"><a class="header" href="#starting-state">Starting state</a></h3>
+<p>Page 3 has 4 entries and is completely full. You want to insert <code>"dave"</code>.</p>
+<pre><code>Page 3 (full)                           Page 7
+┌─────────────────┐                     ┌─────────────────┐
+│ alice → "data1" │                     │ zara  → "data5" │
+│ bob   → "data2" │ ──next──────────►   │                 │
+│ carol → "data3" │                     └─────────────────┘
+│ eve   → "data4" │
+└─────────────────┘
+</code></pre>
+<p>Call: <code>leaf_mut.insert_or_split(b"dave", b"data_dave", new_page_id=6)</code></p>
+<hr>
+<h3 id="step-1--try-the-normal-insert-first"><a class="header" href="#step-1--try-the-normal-insert-first">Step 1 — Try the normal insert first</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>match self.insert(key, val) {
+    Ok(_) =&gt; return Ok(None),   // fits, done
+    Err("page full") =&gt; { ... } // continue to split
+}
+<span class="boring">}</span></code></pre>
+<p>The insert fails with <code>"page full"</code>. Now the split path begins.</p>
+<hr>
+<h3 id="step-2--collect-all-entries-including-the-new-one"><a class="header" href="#step-2--collect-all-entries-including-the-new-one">Step 2 — Collect all entries including the new one</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut all = self.entries();               // live entries from current page
+all.push((key.to_vec(), val.to_vec()));     // add the new entry
+all.sort_by(|a, b| a.0.cmp(&amp;b.0));         // sort by key
+<span class="boring">}</span></code></pre>
+<p><code>entries()</code> only returns <strong>live</strong> (non-tombstoned) entries. After adding <code>"dave"</code> and sorting:</p>
+<pre><code>all = [
+    ("alice", "data1"),
+    ("bob",   "data2"),
+    ("carol", "data3"),
+    ("dave",  "data_dave"),  ← newly added
+    ("eve",   "data4"),
+]
+</code></pre>
+<hr>
+<h3 id="step-3--find-the-split-point"><a class="header" href="#step-3--find-the-split-point">Step 3 — Find the split point</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mid = all.len() / 2;  // 5 / 2 = 2
+<span class="boring">}</span></code></pre>
+<pre><code>index:  0        1       2        3        4
+all = [alice,  bob,   carol,  dave,   eve ]
+                       ▲
+                      mid=2
+
+left half  = all[..2]  = [alice, bob]
+right half = all[2..]  = [carol, dave, eve]
+</code></pre>
+<hr>
+<h3 id="step-4--the-separator-key"><a class="header" href="#step-4--the-separator-key">Step 4 — The separator key</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let separator_key = right_entries[0].0.clone();  // "carol"
+<span class="boring">}</span></code></pre>
+<p>The separator key is the <strong>first key of the right page</strong>. This is the key that will be inserted into the parent internal node. It acts as a fence: <em>“if your key &gt;= ‘carol’, go to the right page.”</em></p>
+<p><strong>Critical rule — the separator key is ALSO kept in the right leaf.</strong></p>
+<p>This is what “copy up” means. The key <code>"carol"</code> goes both to the parent AND stays as the first entry of the right leaf. This is different from internal node splits where the middle key is removed from both children. Leaves must keep their keys because the leaf chain is the only place the actual data lives.</p>
+<pre><code>           Parent (after caller updates it)
+           ┌──────────────────┐
+           │ ... | carol→pg6 | ... │
+           └──────────────────┘
+                      │
+          ┌───────────┘ points to right leaf
+          ▼
+Page 6: [carol, dave, eve]   ← "carol" is here too
+</code></pre>
+<hr>
+<h3 id="step-5--rebuild-both-pages-from-scratch"><a class="header" href="#step-5--rebuild-both-pages-from-scratch">Step 5 — Rebuild both pages from scratch</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let old_next = self.page.next_leaf_page_id();  // save Page 3's old next (Page 7)
+
+let mut new_left  = Page::new(self.page.page_id());   // same ID as original (page 3)
+let mut new_right = Page::new(new_right_page_id);     // fresh page (page 6)
+
+for (k, v) in left_entries  { new_left.put(k, v)?;  }
+for (k, v) in right_entries { new_right.put(k, v)?; }
+<span class="boring">}</span></code></pre>
+<p>Both pages are created clean with <code>Page::new</code>, then entries are written in sorted order. This also resets any dead bytes — the new pages are compact from birth.</p>
+<hr>
+<h3 id="step-6--wire-the-sibling-pointers"><a class="header" href="#step-6--wire-the-sibling-pointers">Step 6 — Wire the sibling pointers</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>new_left.set_next_leaf_page_id(Some(new_right_page_id));  // left → new right
+new_right.set_next_leaf_page_id(old_next);                // new right → old next
+<span class="boring">}</span></code></pre>
+<p>Before split:</p>
+<pre><code>Page 3 ──────────────────────────────────────────► Page 7
+</code></pre>
+<p>After split:</p>
+<pre><code>Page 3 ──────────► Page 6 ──────────────────────► Page 7
+[alice, bob]        [carol, dave, eve]              [zara]
+</code></pre>
+<p><code>old_next</code> is saved before rebuilding the pages because <code>Page::new</code> zeroes out the header, and the original page’s next pointer would be lost. If you forgot <code>old_next</code>, the chain would be severed at Page 7.</p>
+<hr>
+<h3 id="step-7--replace-the-original-page-in-memory"><a class="header" href="#step-7--replace-the-original-page-in-memory">Step 7 — Replace the original page in memory</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>*self.page = new_left;
+<span class="boring">}</span></code></pre>
+<p><code>self.page</code> is a <code>&amp;mut Page</code> pointing to the page that lives inside the pager. This line overwrites the pager’s copy of page 3 with the new left contents — in place, with no heap allocation or pager call needed.</p>
+<hr>
+<h3 id="step-8--return-the-split-result"><a class="header" href="#step-8--return-the-split-result">Step 8 — Return the split result</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>Ok(Some(LeafSplit {
+    separator_key,                              // "carol"
+    right_page: LeafPage::from_page(new_right), // page 6, owned
+}))
+<span class="boring">}</span></code></pre>
+<p>The caller (the <code>BTree</code>) must now:</p>
+<ol>
+<li>Store <code>right_page</code> in the pager under page ID 6.</li>
+<li>Insert <code>("carol", page_id=6)</code> into the parent internal node.</li>
+</ol>
+<p>If there is no parent yet (the root was a leaf and just split), the <code>BTree</code> must create a new root internal node.</p>
+<hr>
+<h2 id="full-before--after-picture"><a class="header" href="#full-before--after-picture">Full before / after picture</a></h2>
+<pre><code>BEFORE (page 3 is full, inserting "dave"):
+
+        [parent internal node]
+              │
+              ▼
+Page 3: [alice, bob, carol, eve] ──next──► Page 7: [zara]
+
+
+AFTER split (new_right_page_id = 6):
+
+        [parent internal node]
+          │             │
+          ▼             ▼
+Page 3: [alice, bob]   Page 6: [carol, dave, eve] ──next──► Page 7: [zara]
+     ──next──►
+
+Parent now has separator "carol" pointing to page 6.
+</code></pre>
+<hr>
+<h2 id="what-the-caller-does-with-the-separator-key"><a class="header" href="#what-the-caller-does-with-the-separator-key">What the caller does with the separator key</a></h2>
+<p><code>insert_or_split</code> hands back a <code>LeafSplit</code> and stops there. It has no idea what the rest of the tree looks like. The caller — the <code>BTree</code> — is responsible for what happens next.</p>
+<p>There are two cases.</p>
+<hr>
+<h3 id="case-1--a-parent-internal-node-exists"><a class="header" href="#case-1--a-parent-internal-node-exists">Case 1 — A parent internal node exists</a></h3>
+<p>The caller takes the separator key and the new right page ID and inserts them into the parent:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>parent.insert_separator(separator_key, right_page.page_id())
+<span class="boring">}</span></code></pre>
+<p>This adds one new routing entry to the parent. The parent now knows: <em>“if key &gt;= ‘carol’, go to page 6.”</em></p>
+<pre><code>BEFORE split:
+
+        [parent: bob→pg3]
+                │
+                ▼
+        pg3: [alice, bob, carol, eve]   (full)
+
+
+AFTER split (separator="carol", new right=pg6):
+
+        [parent: bob→pg3, carol→pg6]
+                │                │
+                ▼                ▼
+     pg3: [alice, bob]     pg6: [carol, dave, eve]
+</code></pre>
+<p>The parent gained one entry. The leaf level gained one page. The tree is wider but not taller.</p>
+<hr>
+<h3 id="case-2--there-is-no-parent-the-leaf-was-the-root"><a class="header" href="#case-2--there-is-no-parent-the-leaf-was-the-root">Case 2 — There is no parent (the leaf was the root)</a></h3>
+<p>A tree starts as a single leaf page that is also the root. When that leaf splits for the first time, there is no parent to insert into. The <code>BTree</code> must <strong>create a new root internal node</strong>:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let new_root = InternalPage::new(new_root_page_id, left_page_id);
+new_root.insert_separator(separator_key, right_page_id);
+<span class="boring">}</span></code></pre>
 <ul>
-<li>The right page is never empty.</li>
-<li><code>separator_key == right_page.entries()[0].0</code> — the separator is exactly the first key of the right page.</li>
-<li>Every key in the left page is strictly less than every key in the right page.</li>
-<li>No key-value pair is lost or duplicated.</li>
-<li>The existing sibling chain is preserved: <code>right.next = old_next</code>.</li>
+<li><code>leftmost_child</code> of the new root = left page ID</li>
+<li>One separator entry = <code>(separator_key, right_page_id)</code></li>
 </ul>
+<pre><code>BEFORE (single leaf, also the root):
+
+   root=pg3: [alice, bob, carol, eve]   (full, about to split)
+
+
+AFTER (tree grows one level taller):
+
+   root=pg9 (new internal node)
+   leftmost=pg3   carol→pg6
+        │               │
+        ▼               ▼
+   pg3: [alice, bob]   pg6: [carol, dave, eve]
+</code></pre>
+<p>This is the <strong>only moment the tree ever grows taller</strong>. Every other split just makes the tree wider by adding a new leaf and a new entry somewhere in an existing internal node.</p>
+<hr>
+<h3 id="what-if-the-parent-internal-node-is-also-full"><a class="header" href="#what-if-the-parent-internal-node-is-also-full">What if the parent internal node is also full?</a></h3>
+<p>When the caller tries <code>parent.insert_separator(...)</code> and the parent returns <code>"page full"</code>, the parent internal node must split too — producing its own separator key pushed up to <em>its</em> parent. This cascades upward until either a non-full ancestor is found or the root itself splits and a new root is created.</p>
+<pre><code>Cascade example:
+
+   Level 2 (root): split → new root created, tree grows taller
+        │
+   Level 1 (internal): split → separator pushed up to level 2
+        │
+   Level 0 (leaf): split → separator pushed up to level 1
+</code></pre>
+<p>In practice, cascades are rare. A page holds hundreds of entries, so internal nodes fill up much slower than leaves.</p>
+<hr>
+<h2 id="split-invariants"><a class="header" href="#split-invariants">Split invariants</a></h2>
+<p>After every split, all of these must hold:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Invariant</th><th>Why it matters</th></tr>
+</thead>
+<tbody>
+<tr><td><code>separator_key == right_page.entries()[0].0</code></td><td>Parent uses this key for routing — it must exactly match the first key of the right leaf</td></tr>
+<tr><td>Every left key &lt; every right key</td><td>The whole B+ tree property; violated keys break binary search at every level above</td></tr>
+<tr><td>No key is lost or duplicated</td><td>Correctness — every inserted entry must be findable after the split</td></tr>
+<tr><td><code>right.next == old left.next</code></td><td>The leaf chain must remain intact for range scans</td></tr>
+<tr><td><code>left.next == new_right_page_id</code></td><td>Left must point to its new right sibling</td></tr>
+<tr><td>Neither page is empty</td><td>A split into one full page and one empty page would immediately re-trigger another split</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="internal-pages"><a class="header" href="#internal-pages">Internal Pages</a></h1>
+<h2 id="what-is-an-internal-page"><a class="header" href="#what-is-an-internal-page">What is an internal page?</a></h2>
+<p>An internal page does not hold your data. It holds <strong>directions to your data</strong>.</p>
+<p>Think of a building directory in a lobby: it doesn’t contain any offices, it just tells you <em>“accounting is on floor 3, engineering is on floor 5.”</em> The directory is the internal page. The actual offices are the leaf pages.</p>
+<p>Every key stored in an internal page is a <strong>separator</strong> — a boundary marker that says: <em>“everything to my left is smaller than me, everything to my right is greater than or equal to me.”</em></p>
+<p>When you search for a key, you read the internal page, pick the right direction, and follow the pointer. You never stop at an internal page — you keep going until you reach a leaf.</p>
+<hr>
+<h2 id="the-layout"><a class="header" href="#the-layout">The layout</a></h2>
+<p>An internal page is also backed by the same slotted <code>Page</code> structure. Each slot stores a separator key mapped to a <strong>child page ID</strong> (a 4-byte <code>u32</code>):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct InternalPage {
+    page: Page,
+}
+<span class="boring">}</span></code></pre>
+<p>Each entry in the slot array looks like:</p>
+<pre><code>slot[i] → [ separator_key | child_page_id (4 bytes LE) ]
+</code></pre>
+<p>The slot array is sorted by separator key, just like a leaf.</p>
+<p>There is one special case: the <strong>leftmost child</strong>. For every internal node with <code>n</code> separator keys, there are <code>n+1</code> children. The leftmost child (for keys smaller than the first separator) has no key to pair with. It is stored separately in the <code>next_leaf_page_id</code> header field, which is repurposed for internal pages.</p>
+<pre><code>Internal page layout (logical):
+
+  leftmost_child | sep[0]→child[0] | sep[1]→child[1] | sep[2]→child[2]
+       │                │                  │                  │
+       ▼                ▼                  ▼                  ▼
+  keys &lt; sep[0]   sep[0]&lt;=k&lt;sep[1]  sep[1]&lt;=k&lt;sep[2]    k&gt;=sep[2]
+</code></pre>
+<p>In memory (the actual <code>Page</code>):</p>
+<pre><code>┌──────────────────────┬───────────────────────────┬──────┬────────────────────┐
+│ Header               │ Slot array                │ free │ Tuple region       │
+│ next_leaf_page_id=L  │ [sep0→A][sep1→B][sep2→C]  │      │ [C_id][B_id][A_id] │
+│ (repurposed as       │  sorted by key            │      │ (4 bytes each)     │
+│  leftmost child L)   │                           │      │                    │
+└──────────────────────┴───────────────────────────┴──────┴────────────────────┘
+</code></pre>
+<hr>
+<h2 id="the-fencepost-problem"><a class="header" href="#the-fencepost-problem">The fencepost problem</a></h2>
+<p>Why is there always one more child than separators?</p>
+<p>Picture 3 fence panels between 4 fence posts:</p>
+<pre><code>post   panel   post   panel   post   panel   post
+ |─────────────|─────────────|─────────────|
+</code></pre>
+<p>Separators are the panels (they divide space). Children are the posts (they ARE the spaces). With <code>n</code> separators you always get <code>n+1</code> children.</p>
+<pre><code>n=3 separators:  "bob"       "eve"       "zara"
+                  │           │           │
+   [keys&lt;bob]  [bob..eve)  [eve..zara)  [keys&gt;=zara]
+       ▲           ▲           ▲            ▲
+   leftmost    child[0]    child[1]      child[2]
+</code></pre>
+<p>The leftmost child is the extra “post” on the far left that no separator owns.</p>
+<hr>
+<h2 id="find_child--how-routing-works"><a class="header" href="#find_child--how-routing-works"><code>find_child</code> — how routing works</a></h2>
+<p>This is the most important method. Given a search key, return which child to follow.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn find_child(&amp;self, key: &amp;[u8]) -&gt; u32 {
+    let n = self.slot_count() as usize;
+
+    let mut lo = 0usize;
+    let mut hi = n;
+    while lo &lt; hi {
+        let mid = (lo + hi) / 2;
+        if self.key_at(mid) &lt;= key {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    if lo == 0 {
+        self.leftmost_child()
+    } else {
+        self.child_at(lo - 1)
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>The binary search finds the <strong>rightmost separator that is ≤ the search key</strong>. After the loop, <code>lo</code> equals the count of separators that are ≤ the search key.</p>
+<p>Concrete example — separators: <code>["bob", "eve", "zara"]</code>, leftmost=L, children=[A, B, C]:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Search key</th><th>Separators ≤ key</th><th><code>lo</code></th><th>Child returned</th></tr>
+</thead>
+<tbody>
+<tr><td><code>"alice"</code></td><td>none</td><td>0</td><td>leftmost (L)</td></tr>
+<tr><td><code>"bob"</code></td><td><code>"bob"</code></td><td>1</td><td>child[0] (A)</td></tr>
+<tr><td><code>"carol"</code></td><td><code>"bob"</code></td><td>1</td><td>child[0] (A)</td></tr>
+<tr><td><code>"eve"</code></td><td><code>"bob"</code>, <code>"eve"</code></td><td>2</td><td>child[1] (B)</td></tr>
+<tr><td><code>"zara"</code></td><td>all 3</td><td>3</td><td>child[2] (C)</td></tr>
+<tr><td><code>"zzz"</code></td><td>all 3</td><td>3</td><td>child[2] (C)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Notice <code>"carol"</code> → child A, because <code>"bob" &lt;= "carol" &lt; "eve"</code>. Carol lives in the range owned by separator <code>"bob"</code>.</p>
+<hr>
+<h2 id="insert_separator--adding-a-new-routing-entry"><a class="header" href="#insert_separator--adding-a-new-routing-entry"><code>insert_separator</code> — adding a new routing entry</a></h2>
+<p>When a leaf below this node splits, the split produces a <code>separator_key</code> and a new right page. The parent internal node must record this:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn insert_separator(&amp;mut self, key: &amp;[u8], right_child: u32) -&gt; Result&lt;(), &amp;'static str&gt; {
+    self.page.put(key, &amp;right_child.to_le_bytes()).map(|_| ())
+}
+<span class="boring">}</span></code></pre>
+<p>The child page ID is stored as the value (4 raw bytes, little-endian). The separator key is the key. The underlying <code>Page::put</code> keeps the slot array sorted automatically.</p>
+<hr>
+<h2 id="internal-node-split--push-up"><a class="header" href="#internal-node-split--push-up">Internal node split — “push up”</a></h2>
+<p>An internal page also has a fixed size. When <code>insert_separator</code> returns <code>"page full"</code>, the internal page itself must split. This works differently from a leaf split.</p>
+<h3 id="the-rule-the-middle-key-is-pushed-up-not-copied-up"><a class="header" href="#the-rule-the-middle-key-is-pushed-up-not-copied-up">The rule: the middle key is pushed up, not copied up</a></h3>
+<p>In a leaf split, the middle key is <strong>copied</strong> to the parent — it also stays in the right leaf (because leaves need all their keys for scans).</p>
+<p>In an internal split, the middle key is <strong>pushed</strong> to the parent — it is <strong>removed</strong> from both children. It only lives in the parent.</p>
+<p>Why? Internal nodes are routing tables, not data stores. You only need enough keys to point traffic in the right direction. Once a key has been promoted to the parent, the children on each side of it already know their bounds — they don’t need to store the key themselves.</p>
+<h3 id="step-by-step-example"><a class="header" href="#step-by-step-example">Step-by-step example</a></h3>
+<p>Internal page before (leftmost=L, 5 entries, page is full):</p>
+<pre><code>L | bob→A | eve→B | henry→C | paul→D | zara→E
+</code></pre>
+<p>Insert separator <code>("kate", F)</code> → page full → split.</p>
+<p><strong>Step 1 — collect all entries, add new one, sort:</strong></p>
+<pre><code>all = [(bob,A), (eve,B), (henry,C), (kate,F), (paul,D), (zara,E)]
+       idx 0     idx 1    idx 2      idx 3      idx 4     idx 5
+</code></pre>
+<p><strong>Step 2 — find the midpoint:</strong></p>
+<pre><code>mid = 6 / 2 = 3
+</code></pre>
+<p><strong>Step 3 — identify the three parts:</strong></p>
+<pre><code>left  = all[..3]  = [(bob,A), (eve,B), (henry,C)]
+pushed_up         = all[3]   = (kate, F)          ← goes to parent, removed from here
+right = all[4..]  = [(paul,D), (zara,E)]
+</code></pre>
+<p><strong>Step 4 — build left page (same page ID, same leftmost child):</strong></p>
+<pre><code>Left internal page:
+  leftmost=L | bob→A | eve→B | henry→C
+</code></pre>
+<p><strong>Step 5 — build right page (new page ID, leftmost = pushed-up entry’s child):</strong></p>
+<p>The pushed-up entry was <code>(kate, F)</code>. The key <code>"kate"</code> goes to the parent. Its child <code>F</code> becomes the leftmost child of the right page — because <code>F</code> is the page for keys <code>"kate" &lt;= k &lt; "paul"</code>.</p>
+<pre><code>Right internal page:
+  leftmost=F | paul→D | zara→E
+</code></pre>
+<p><strong>Step 6 — return the result:</strong></p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>InternalSplit {
+    separator_key: "kate",     // insert into parent
+    right_page: /* right */,   // store in pager
+}
+<span class="boring">}</span></code></pre>
+<h3 id="full-before--after"><a class="header" href="#full-before--after">Full before / after</a></h3>
+<pre><code>BEFORE (inserting kate→F into full internal node):
+
+        [grandparent]
+              │
+              ▼
+  L | bob→A | eve→B | henry→C | paul→D | zara→E
+
+
+AFTER (new_right_page_id = 9):
+
+           [grandparent]
+           now has "kate"→9 inserted
+                │           │
+                ▼           ▼
+  L|bob→A|eve→B|henry→C    F|paul→D|zara→E
+  (original page, rebuilt)  (new page 9)
+
+  "kate" is GONE from both children.
+  It lives only in the grandparent.
+</code></pre>
+<hr>
+<h2 id="leaf-split-vs-internal-split--side-by-side"><a class="header" href="#leaf-split-vs-internal-split--side-by-side">Leaf split vs internal split — side by side</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>Leaf split</th><th>Internal split</th></tr>
+</thead>
+<tbody>
+<tr><td>Where does the middle key go?</td><td><strong>Copied up</strong> — stays in right leaf + sent to parent</td><td><strong>Pushed up</strong> — only in parent, gone from children</td></tr>
+<tr><td>Right child’s leftmost entry</td><td>The first entry of the right half</td><td>The <strong>child pointer</strong> from the middle entry</td></tr>
+<tr><td>Why the difference?</td><td>Leaves need all keys for range scan via sibling chain</td><td>Internal nodes only route — parent has the key now</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="method-reference-1"><a class="header" href="#method-reference-1">Method reference</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new(page_id, leftmost_child)</code></td><td>Fresh internal page with a starting leftmost child</td></tr>
+<tr><td><code>from_page(p)</code></td><td>Wrap an existing <code>Page</code> as an internal node</td></tr>
+<tr><td><code>into_page(self)</code></td><td>Unwrap back to <code>Page</code></td></tr>
+<tr><td><code>page_id()</code></td><td>This node’s page ID</td></tr>
+<tr><td><code>slot_count()</code></td><td>Number of separator entries</td></tr>
+<tr><td><code>free_space_bytes()</code></td><td>Bytes left in the free gap</td></tr>
+<tr><td><code>leftmost_child()</code></td><td>Child page ID for keys &lt; first separator</td></tr>
+<tr><td><code>key_at(i)</code></td><td>Separator key at slot index <code>i</code></td></tr>
+<tr><td><code>child_at(i)</code></td><td>Right child page ID for separator at index <code>i</code></td></tr>
+<tr><td><code>find_child(key)</code></td><td>Binary search → which child page ID to follow</td></tr>
+<tr><td><code>insert_separator(key, child)</code></td><td>Add a routing entry; <code>Err("page full")</code> if no space</td></tr>
+<tr><td><code>insert_or_split(key, child, new_id)</code></td><td>Insert with split if needed; returns <code>Option&lt;InternalSplit&gt;</code></td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-pager"><a class="header" href="#the-pager">The Pager</a></h1>
 <p>The <code>Pager</code> manages the collection of pages. It assigns page IDs, allocates new pages, and provides mutable or shared access to existing ones.</p>

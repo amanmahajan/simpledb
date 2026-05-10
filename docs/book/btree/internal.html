@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Page Operations - simpledb Internals</title>
+        <title>Internal Pages - simpledb Internals</title>
 
 
         <!-- Custom HTML head -->
@@ -177,281 +177,219 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="page-operations"><a class="header" href="#page-operations">Page Operations</a></h1>
-<p>All key-value operations go through a binary search on the sorted slot array. The <code>find_slot</code> helper returns either the slot index where the key was found or the index where it should be inserted.</p>
-<h2 id="binary-search--find_slot"><a class="header" href="#binary-search--find_slot">Binary search — <code>find_slot</code></a></h2>
+                        <h1 id="internal-pages"><a class="header" href="#internal-pages">Internal Pages</a></h1>
+<h2 id="what-is-an-internal-page"><a class="header" href="#what-is-an-internal-page">What is an internal page?</a></h2>
+<p>An internal page does not hold your data. It holds <strong>directions to your data</strong>.</p>
+<p>Think of a building directory in a lobby: it doesn’t contain any offices, it just tells you <em>“accounting is on floor 3, engineering is on floor 5.”</em> The directory is the internal page. The actual offices are the leaf pages.</p>
+<p>Every key stored in an internal page is a <strong>separator</strong> — a boundary marker that says: <em>“everything to my left is smaller than me, everything to my right is greater than or equal to me.”</em></p>
+<p>When you search for a key, you read the internal page, pick the right direction, and follow the pointer. You never stop at an internal page — you keep going until you reach a leaf.</p>
+<hr>
+<h2 id="the-layout"><a class="header" href="#the-layout">The layout</a></h2>
+<p>An internal page is also backed by the same slotted <code>Page</code> structure. Each slot stores a separator key mapped to a <strong>child page ID</strong> (a 4-byte <code>u32</code>):</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>enum SearchResult {
-    Found(usize),     // index of the existing slot
-    NotFound(usize),  // index where a new slot should be inserted
+</span>pub struct InternalPage {
+    page: Page,
 }
+<span class="boring">}</span></code></pre>
+<p>Each entry in the slot array looks like:</p>
+<pre><code>slot[i] → [ separator_key | child_page_id (4 bytes LE) ]
+</code></pre>
+<p>The slot array is sorted by separator key, just like a leaf.</p>
+<p>There is one special case: the <strong>leftmost child</strong>. For every internal node with <code>n</code> separator keys, there are <code>n+1</code> children. The leftmost child (for keys smaller than the first separator) has no key to pair with. It is stored separately in the <code>next_leaf_page_id</code> header field, which is repurposed for internal pages.</p>
+<pre><code>Internal page layout (logical):
 
-fn find_slot(&amp;self, key: &amp;[u8]) -&gt; SearchResult {
-    let search_key = Key::from(key);
+  leftmost_child | sep[0]→child[0] | sep[1]→child[1] | sep[2]→child[2]
+       │                │                  │                  │
+       ▼                ▼                  ▼                  ▼
+  keys &lt; sep[0]   sep[0]&lt;=k&lt;sep[1]  sep[1]&lt;=k&lt;sep[2]    k&gt;=sep[2]
+</code></pre>
+<p>In memory (the actual <code>Page</code>):</p>
+<pre><code>┌──────────────────────┬───────────────────────────┬──────┬────────────────────┐
+│ Header               │ Slot array                │ free │ Tuple region       │
+│ next_leaf_page_id=L  │ [sep0→A][sep1→B][sep2→C]  │      │ [C_id][B_id][A_id] │
+│ (repurposed as       │  sorted by key            │      │ (4 bytes each)     │
+│  leftmost child L)   │                           │      │                    │
+└──────────────────────┴───────────────────────────┴──────┴────────────────────┘
+</code></pre>
+<hr>
+<h2 id="the-fencepost-problem"><a class="header" href="#the-fencepost-problem">The fencepost problem</a></h2>
+<p>Why is there always one more child than separators?</p>
+<p>Picture 3 fence panels between 4 fence posts:</p>
+<pre><code>post   panel   post   panel   post   panel   post
+ |─────────────|─────────────|─────────────|
+</code></pre>
+<p>Separators are the panels (they divide space). Children are the posts (they ARE the spaces). With <code>n</code> separators you always get <code>n+1</code> children.</p>
+<pre><code>n=3 separators:  "bob"       "eve"       "zara"
+                  │           │           │
+   [keys&lt;bob]  [bob..eve)  [eve..zara)  [keys&gt;=zara]
+       ▲           ▲           ▲            ▲
+   leftmost    child[0]    child[1]      child[2]
+</code></pre>
+<p>The leftmost child is the extra “post” on the far left that no separator owns.</p>
+<hr>
+<h2 id="find_child--how-routing-works"><a class="header" href="#find_child--how-routing-works"><code>find_child</code> — how routing works</a></h2>
+<p>This is the most important method. Given a search key, return which child to follow.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn find_child(&amp;self, key: &amp;[u8]) -&gt; u32 {
+    let n = self.slot_count() as usize;
+
     let mut lo = 0usize;
-    let mut hi = self.slot_count() as usize;
-
+    let mut hi = n;
     while lo &lt; hi {
         let mid = (lo + hi) / 2;
-        let tuple_off = self.read_slot(mid) as usize;
-        let mid_key = Tuple::from(&amp;self.data[tuple_off..]).key();
-
-        match mid_key.cmp(&amp;search_key) {
-            Ordering::Equal   =&gt; return SearchResult::Found(mid),
-            Ordering::Less    =&gt; lo = mid + 1,
-            Ordering::Greater =&gt; hi = mid,
+        if self.key_at(mid) &lt;= key {
+            lo = mid + 1;
+        } else {
+            hi = mid;
         }
     }
-    SearchResult::NotFound(lo)
-}
-<span class="boring">}</span></code></pre>
-<p>Keys are compared as raw byte slices in lexicographic order via <code>Key&lt;D&gt;</code>’s <code>Ord</code> implementation.</p>
-<h2 id="get"><a class="header" href="#get"><code>get</code></a></h2>
-<p>Looks up the key. Returns <code>None</code> if the key is absent or its tuple is tombstoned.</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub fn get(&amp;self, key: &amp;[u8]) -&gt; Option&lt;&amp;[u8]&gt; {
-    match self.find_slot(key) {
-        SearchResult::Found(i) =&gt; {
-            let off = self.read_slot(i) as usize;
-            if self.read_tuple_tombstone(off) == 1 {
-                None
-            } else {
-                Some(self.read_tuple_val(off))
-            }
-        }
-        SearchResult::NotFound(_) =&gt; None,
-    }
-}
-<span class="boring">}</span></code></pre>
-<p>The returned slice borrows directly from the page buffer — no copy.</p>
-<h2 id="put"><a class="header" href="#put"><code>put</code></a></h2>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub fn put(&amp;mut self, key: &amp;[u8], val: &amp;[u8])
-    -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, &amp;'static str&gt;
-<span class="boring">}</span></code></pre>
-<p>Returns <code>Ok(None)</code> on insert, <code>Ok(Some(old_val))</code> on overwrite, <code>Err("page full")</code> when there is no space even after compaction.</p>
-<p><code>put</code> has two completely different code paths depending on whether <code>find_slot</code> returns <code>Found</code> or <code>NotFound</code>.</p>
-<hr>
-<h3 id="case-1--new-key-insert"><a class="header" href="#case-1--new-key-insert">Case 1 — New key (insert)</a></h3>
-<h4 id="what-needs-to-fit"><a class="header" href="#what-needs-to-fit">What needs to fit</a></h4>
-<p>A new key needs room for <strong>two things simultaneously</strong>:</p>
-<pre><code>free space needed = tuple_bytes + SLOT_SIZE (2 bytes)
-                    └─ the actual data ─┘   └─ the new pointer entry ─┘
-</code></pre>
-<p>The slot array grows from the left; the tuple region grows from the right. Both eat from the same free gap in the middle. If <code>free_space_bytes &lt; tuple_len + 2</code>, the page is full.</p>
-<h4 id="page-state-before-insert-2-slots-keys-bob-and-eve"><a class="header" href="#page-state-before-insert-2-slots-keys-bob-and-eve">Page state before insert (2 slots, keys “bob” and “eve”)</a></h4>
-<pre><code>byte 0                                                        byte 8191
-┌────────────────────┬──────────┬──────────┬───────┬─────────────────────┐
-│ Header (20 B)      │slot[0]=… │slot[1]=… │ free  │  …[eve]…  [bob]…   │
-│ slot_count=2       │ (2 B)    │ (2 B)    │       │                     │
-│ free_start=24      │          │          │       │                     │
-│ free_end=8120      │          │          │       │                     │
-└────────────────────┴──────────┴──────────┴───────┴─────────────────────┘
-                     ▲                     ▲       ▲
-                  byte 20               byte 24  byte 8120
-                  (= HEADER_SIZE)       free_start  free_end
-</code></pre>
-<h4 id="inserting-key-carol"><a class="header" href="#inserting-key-carol">Inserting key “carol”</a></h4>
-<p><code>find_slot("carol")</code> returns <code>NotFound(1)</code> — it belongs between slot<a href="&quot;bob&quot;">0</a> and slot<a href="&quot;eve&quot;">1</a>.</p>
-<p><strong>Step 1 — <code>alloc_tuple</code></strong>: subtract tuple length from <code>free_end</code>, return new offset.</p>
-<pre><code>free_end was 8120
-tuple for "carol" = 1 + 2 + 2 + 5 + val_len bytes
-new free_end      = 8120 - tuple_len
-</code></pre>
-<p>The tuple bytes are written at the new <code>free_end</code> offset:</p>
-<pre><code>┌────────────────────┬────────┬────────┬───────┬──────────────────────────────┐
-│ Header             │slot[0] │slot[1] │ free  │  [carol tuple][eve][bob]     │
-│ free_end updated   │        │        │       │  ▲                           │
-└────────────────────┴────────┴────────┴───────┴──┼───────────────────────────┘
-                                                   new free_end
-</code></pre>
-<p><strong>Step 2 — <code>alloc_slot</code></strong>: increment <code>slot_count</code> from 2 → 3, advance <code>free_start</code> from 24 → 26.</p>
-<pre><code>┌────────────────────┬────────┬────────┬────────┬──────┬───────────────────────┐
-│ Header             │slot[0] │slot[1] │slot[2] │ free │  [carol][eve][bob]    │
-│ slot_count=3       │        │        │(empty) │      │                       │
-│ free_start=26      │        │        │        │      │                       │
-└────────────────────┴────────┴────────┴────────┴──────┴───────────────────────┘
-</code></pre>
-<p><strong>Step 3 — shift slots right</strong>: slots at positions ≥ 1 (the insertion point) shift one position to the right to open the gap.</p>
-<pre><code>Before shift:  slot[0]="bob"  slot[1]="eve"  slot[2]=empty
-After shift:   slot[0]="bob"  slot[1]=empty  slot[2]="eve"
-</code></pre>
-<p><strong>Step 4 — write slot</strong>: write the new tuple’s offset into <code>slot[1]</code>.</p>
-<pre><code>slot[0] → bob tuple offset
-slot[1] → carol tuple offset   ← new
-slot[2] → eve tuple offset
-</code></pre>
-<p>Final state — slots are sorted, tuple region has all three tuples packed from the right:</p>
-<pre><code>┌────────────────────┬────────┬────────┬────────┬──────┬──────────────────────┐
-│ Header             │slot[0] │slot[1] │slot[2] │ free │ [carol]  [eve] [bob] │
-│ slot_count=3       │→bob    │→carol  │→eve    │      │                      │
-│ free_start=26      │        │        │        │      │                      │
-└────────────────────┴────────┴────────┴────────┴──────┴──────────────────────┘
-</code></pre>
-<blockquote>
-<p>The tuples are <strong>not sorted</strong> in the tuple region — only the <strong>slot array</strong> is sorted. Binary search on slots is what makes lookups O(log n), not physical ordering of tuple bytes.</p>
-</blockquote>
-<hr>
-<h3 id="case-2--existing-key-overwrite"><a class="header" href="#case-2--existing-key-overwrite">Case 2 — Existing key (overwrite)</a></h3>
-<p>This is more subtle. The old tuple cannot be resized in place because tuples are variable-length and packed tightly. Instead:</p>
-<ol>
-<li>The old tuple is <strong>tombstoned</strong> (its first byte is set to <code>1</code>).</li>
-<li>A brand-new tuple is allocated at the current <code>free_end</code>.</li>
-<li>The existing slot is updated to point to the new offset.</li>
-</ol>
-<p>The old bytes remain on the page as dead space until compaction.</p>
-<h4 id="why-not-just-edit-the-old-tuple-in-place"><a class="header" href="#why-not-just-edit-the-old-tuple-in-place">Why not just edit the old tuple in place?</a></h4>
-<p>If the new value is a different size, the tuple would overlap its neighbour. Slotted pages avoid this by always appending new tuples at the free end — the slot redirects the pointer, so no other slot is affected.</p>
-<h4 id="page-state-before-overwrite-key-bob-value-old"><a class="header" href="#page-state-before-overwrite-key-bob-value-old">Page state before overwrite (key “bob”, value “old”)</a></h4>
-<pre><code>┌────────────┬────────┬───────┬────────────────────────────────────────┐
-│ Header     │slot[0] │ free  │          [bob|"old"]                   │
-│ dead=0     │→7900   │       │          ▲ offset 7900                 │
-└────────────┴────────┴───────┴──────────┼───────────────────────────-─┘
-                                         tombstone=0 here
-</code></pre>
-<h4 id="overwriting-bob-with-value-new-longer-value"><a class="header" href="#overwriting-bob-with-value-new-longer-value">Overwriting “bob” with value “new-longer-value”</a></h4>
-<p><strong>Step 1 — tombstone the old tuple</strong>: set <code>data[7900] = 1</code>, add old tuple’s total length to <code>dead_bytes</code> counter.</p>
-<pre><code>offset 7900: tombstone byte set to 1
-dead_bytes counter += old_tuple_total_len
-</code></pre>
-<p><strong>Step 2 — <code>alloc_tuple</code></strong>: carve out space for the new tuple at the new <code>free_end</code>.</p>
-<pre><code>new tuple written at (free_end - new_tuple_len)
-</code></pre>
-<p><strong>Step 3 — update slot</strong>: <code>slot[0]</code> now points to the new offset instead of 7900.</p>
-<pre><code>┌────────────┬────────┬───────┬──────────────────────────────────────────────┐
-│ Header     │slot[0] │ free  │  [bob|"new-longer-value"]  [☠ bob|"old"]    │
-│ dead=N     │→7860   │       │  ▲ new offset              ▲ dead, offset 7900│
-└────────────┴────────┴───────┴──┼──────────────────────────────────────────-┘
-                                  7860
-</code></pre>
-<p>The old bytes at 7900 are now unreachable from any slot — they are invisible to <code>get</code> — but they still physically occupy space. <code>dead_bytes</code> tracks this. When <code>dead_bytes / tuple_region_used_bytes &gt;= dead_tuple_compact_percent</code>, compaction fires and sweeps them out.</p>
-<h4 id="why-check-free-space-before-compaction-then-again-after"><a class="header" href="#why-check-free-space-before-compaction-then-again-after">Why check free space before compaction, then again after?</a></h4>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>if self.free_space_bytes() &lt; needed {
-    self.maybe_compact_dead_tuples()?;   // try to reclaim dead space
-    if self.free_space_bytes() &lt; needed { // check again — compaction may not have helped
-        return Err("page full");
-    }
-}
-<span class="boring">}</span></code></pre>
-<p>Compaction only helps if there are enough dead bytes to reclaim. If the page is genuinely full of live data, compaction does nothing and the second check correctly returns <code>"page full"</code>.</p>
-<h2 id="remove"><a class="header" href="#remove"><code>remove</code></a></h2>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub fn remove(&amp;mut self, key: &amp;[u8]) -&gt; Option&lt;Vec&lt;u8&gt;&gt;
-<span class="boring">}</span></code></pre>
-<p>Returns the old value, or <code>None</code> if the key was not found.</p>
-<p><code>remove</code> does <strong>not</strong> free the tuple’s bytes immediately. It tombstones the tuple in place and closes the gap in the slot array. The dead bytes are reclaimed later by compaction.</p>
-<hr>
-<h3 id="what-remove-must-do"><a class="header" href="#what-remove-must-do">What remove must do</a></h3>
-<p>Two separate data structures need to be updated:</p>
-<ol>
-<li><strong>The tuple</strong> (in the tuple region) — marked dead so <code>get</code> skips it.</li>
-<li><strong>The slot array</strong> (near the header) — the slot pointing to this tuple is physically removed and the array is closed up, keeping it gap-free and sorted.</li>
-</ol>
-<hr>
-<h3 id="starting-state--3-slots-keys-bob-carol-eve"><a class="header" href="#starting-state--3-slots-keys-bob-carol-eve">Starting state — 3 slots, keys “bob”, “carol”, “eve”</a></h3>
-<pre><code>byte 0                                                              byte 8191
-┌────────────┬────────┬────────┬────────┬──────┬──────────────────────────────┐
-│ Header     │slot[0] │slot[1] │slot[2] │ free │  [carol]      [eve]   [bob]  │
-│ slot_count=3│→bob   │→carol  │→eve    │      │  ▲ off=7950   ▲7970   ▲7990  │
-│ free_start=26│      │        │        │      │                               │
-│ free_end=7950│      │        │        │      │                               │
-│ dead=0     │        │        │        │      │                               │
-└────────────┴────────┴────────┴────────┴──────┴───────────────────────────────┘
-</code></pre>
-<h3 id="removing-key-carol-slot-index-1"><a class="header" href="#removing-key-carol-slot-index-1">Removing key “carol” (slot index 1)</a></h3>
-<p><code>find_slot("carol")</code> returns <code>Found(1)</code>.</p>
-<hr>
-<p><strong>Step 1 — capture the old value</strong></p>
-<p>Before touching anything, read the value bytes from the tuple at <code>slot[1]</code>’s offset and copy them into a <code>Vec&lt;u8&gt;</code>. This is what the function returns to the caller.</p>
-<pre><code>old_val = read_tuple_val(7950).to_vec()   // copy made here
-</code></pre>
-<hr>
-<p><strong>Step 2 — tombstone the tuple</strong></p>
-<p>Set the first byte at offset 7950 to <code>1</code>. The tuple bytes still sit in the tuple region but are now invisible to any future <code>get</code> or scan.</p>
-<pre><code>data[7950] = 1    // tombstone flag
 
-Before: [0x00 | key_len | val_len | "carol" | value...]   tombstone=0 (live)
-After:  [0x01 | key_len | val_len | "carol" | value...]   tombstone=1 (dead)
-</code></pre>
-<p>Add the tuple’s total byte length to the <code>dead_bytes</code> counter in the header:</p>
-<pre><code>dead_bytes += 1 + 2 + 2 + key_len + val_len
-           = total size of the carol tuple
-</code></pre>
-<p>The page now looks like this — slot[1] still points to the dead tuple, but that is about to be fixed:</p>
-<pre><code>┌────────────┬────────┬────────┬────────┬──────┬──────────────────────────────┐
-│ Header     │slot[0] │slot[1] │slot[2] │ free │  [☠carol]     [eve]   [bob]  │
-│ dead=N     │→bob    │→carol  │→eve    │      │  tombstone=1                  │
-└────────────┴────────┴────────┴────────┴──────┴───────────────────────────────┘
-</code></pre>
-<hr>
-<p><strong>Step 3 — shift slots left</strong></p>
-<p>Every slot after position 1 shifts one position to the left, overwriting the removed slot and closing the gap.</p>
-<pre><code>Before:  slot[0]→bob  slot[1]→carol  slot[2]→eve
-                            ↑ removing this
-After:   slot[0]→bob  slot[1]→eve    slot[2]→(stale, will be ignored)
-</code></pre>
-<p>The loop runs: <code>for j in 2..3 { write_slot(j-1, read_slot(j)) }</code>, which copies slot[2] into slot[1].</p>
-<hr>
-<p><strong>Step 4 — update header counters</strong></p>
-<pre><code>slot_count: 3 → 2
-free_start: 26 → 24   (= HEADER_SIZE + slot_count * SLOT_SIZE = 20 + 2*2)
-</code></pre>
-<p><code>free_start</code> retreats by 2 bytes — the slot array is now one entry shorter, giving back 2 bytes to the free gap. The stale value in the old slot[2] position is now inside the free region and will be overwritten by the next insert.</p>
-<p>Final state:</p>
-<pre><code>byte 0                                                              byte 8191
-┌────────────┬────────┬────────┬──────────┬──────────────────────────────────┐
-│ Header     │slot[0] │slot[1] │   free   │  [☠carol]     [eve]   [bob]      │
-│ slot_count=2│→bob   │→eve    │          │  ▲ dead bytes here                │
-│ free_start=24│      │        │          │                                   │
-│ dead=N     │        │        │          │                                   │
-└────────────┴────────┴────────┴──────────┴───────────────────────────────────┘
-</code></pre>
-<hr>
-<h3 id="what-does-not-happen"><a class="header" href="#what-does-not-happen">What does NOT happen</a></h3>
-<p>The carol tuple bytes are <strong>not moved or erased</strong>. The tuple region still physically contains:</p>
-<pre><code>[☠carol bytes][eve bytes][bob bytes]
-</code></pre>
-<p>The free region did not grow — <code>free_end</code> is unchanged. The only space recovered immediately is the 2-byte slot. The carol tuple’s bytes remain as dead weight until compaction fires.</p>
-<hr>
-<h3 id="asymmetry-with-put"><a class="header" href="#asymmetry-with-put">Asymmetry with <code>put</code></a></h3>
+    if lo == 0 {
+        self.leftmost_child()
+    } else {
+        self.child_at(lo - 1)
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>The binary search finds the <strong>rightmost separator that is ≤ the search key</strong>. After the loop, <code>lo</code> equals the count of separators that are ≤ the search key.</p>
+<p>Concrete example — separators: <code>["bob", "eve", "zara"]</code>, leftmost=L, children=[A, B, C]:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th></th><th><code>put</code> (new key)</th><th><code>remove</code></th></tr>
+<tr><th>Search key</th><th>Separators ≤ key</th><th><code>lo</code></th><th>Child returned</th></tr>
 </thead>
 <tbody>
-<tr><td>Slot array</td><td>grows by 1 (shift right, write)</td><td>shrinks by 1 (shift left)</td></tr>
-<tr><td><code>free_start</code></td><td>advances by 2</td><td>retreats by 2</td></tr>
-<tr><td><code>free_end</code></td><td>retreats by tuple size</td><td><strong>unchanged</strong></td></tr>
-<tr><td>Tuple bytes</td><td>written at new <code>free_end</code></td><td>tombstoned in place</td></tr>
-<tr><td>Space recovered</td><td>n/a</td><td>only 2 bytes (the slot), rest waits for compaction</td></tr>
+<tr><td><code>"alice"</code></td><td>none</td><td>0</td><td>leftmost (L)</td></tr>
+<tr><td><code>"bob"</code></td><td><code>"bob"</code></td><td>1</td><td>child[0] (A)</td></tr>
+<tr><td><code>"carol"</code></td><td><code>"bob"</code></td><td>1</td><td>child[0] (A)</td></tr>
+<tr><td><code>"eve"</code></td><td><code>"bob"</code>, <code>"eve"</code></td><td>2</td><td>child[1] (B)</td></tr>
+<tr><td><code>"zara"</code></td><td>all 3</td><td>3</td><td>child[2] (C)</td></tr>
+<tr><td><code>"zzz"</code></td><td>all 3</td><td>3</td><td>child[2] (C)</td></tr>
 </tbody>
 </table>
 </div>
-<p>This asymmetry is why the page can accumulate dead bytes: inserts move <code>free_end</code> in but removes never move it back out.</p>
-<h2 id="get_key_value_at_slot"><a class="header" href="#get_key_value_at_slot"><code>get_key_value_at_slot</code></a></h2>
-<p>Iterates slots by index (useful for scanning all entries):</p>
+<p>Notice <code>"carol"</code> → child A, because <code>"bob" &lt;= "carol" &lt; "eve"</code>. Carol lives in the range owned by separator <code>"bob"</code>.</p>
+<hr>
+<h2 id="insert_separator--adding-a-new-routing-entry"><a class="header" href="#insert_separator--adding-a-new-routing-entry"><code>insert_separator</code> — adding a new routing entry</a></h2>
+<p>When a leaf below this node splits, the split produces a <code>separator_key</code> and a new right page. The parent internal node must record this:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub fn get_key_value_at_slot(&amp;self, slot_idx: usize) -&gt; Option&lt;(&amp;[u8], &amp;[u8])&gt;
+</span>pub fn insert_separator(&amp;mut self, key: &amp;[u8], right_child: u32) -&gt; Result&lt;(), &amp;'static str&gt; {
+    self.page.put(key, &amp;right_child.to_le_bytes()).map(|_| ())
+}
 <span class="boring">}</span></code></pre>
-<p>Returns <code>None</code> for out-of-bounds indices or tombstoned tuples. Because slots are kept sorted, iterating slots 0…n gives keys in ascending order.</p>
+<p>The child page ID is stored as the value (4 raw bytes, little-endian). The separator key is the key. The underlying <code>Page::put</code> keeps the slot array sorted automatically.</p>
+<hr>
+<h2 id="internal-node-split--push-up"><a class="header" href="#internal-node-split--push-up">Internal node split — “push up”</a></h2>
+<p>An internal page also has a fixed size. When <code>insert_separator</code> returns <code>"page full"</code>, the internal page itself must split. This works differently from a leaf split.</p>
+<h3 id="the-rule-the-middle-key-is-pushed-up-not-copied-up"><a class="header" href="#the-rule-the-middle-key-is-pushed-up-not-copied-up">The rule: the middle key is pushed up, not copied up</a></h3>
+<p>In a leaf split, the middle key is <strong>copied</strong> to the parent — it also stays in the right leaf (because leaves need all their keys for scans).</p>
+<p>In an internal split, the middle key is <strong>pushed</strong> to the parent — it is <strong>removed</strong> from both children. It only lives in the parent.</p>
+<p>Why? Internal nodes are routing tables, not data stores. You only need enough keys to point traffic in the right direction. Once a key has been promoted to the parent, the children on each side of it already know their bounds — they don’t need to store the key themselves.</p>
+<h3 id="step-by-step-example"><a class="header" href="#step-by-step-example">Step-by-step example</a></h3>
+<p>Internal page before (leftmost=L, 5 entries, page is full):</p>
+<pre><code>L | bob→A | eve→B | henry→C | paul→D | zara→E
+</code></pre>
+<p>Insert separator <code>("kate", F)</code> → page full → split.</p>
+<p><strong>Step 1 — collect all entries, add new one, sort:</strong></p>
+<pre><code>all = [(bob,A), (eve,B), (henry,C), (kate,F), (paul,D), (zara,E)]
+       idx 0     idx 1    idx 2      idx 3      idx 4     idx 5
+</code></pre>
+<p><strong>Step 2 — find the midpoint:</strong></p>
+<pre><code>mid = 6 / 2 = 3
+</code></pre>
+<p><strong>Step 3 — identify the three parts:</strong></p>
+<pre><code>left  = all[..3]  = [(bob,A), (eve,B), (henry,C)]
+pushed_up         = all[3]   = (kate, F)          ← goes to parent, removed from here
+right = all[4..]  = [(paul,D), (zara,E)]
+</code></pre>
+<p><strong>Step 4 — build left page (same page ID, same leftmost child):</strong></p>
+<pre><code>Left internal page:
+  leftmost=L | bob→A | eve→B | henry→C
+</code></pre>
+<p><strong>Step 5 — build right page (new page ID, leftmost = pushed-up entry’s child):</strong></p>
+<p>The pushed-up entry was <code>(kate, F)</code>. The key <code>"kate"</code> goes to the parent. Its child <code>F</code> becomes the leftmost child of the right page — because <code>F</code> is the page for keys <code>"kate" &lt;= k &lt; "paul"</code>.</p>
+<pre><code>Right internal page:
+  leftmost=F | paul→D | zara→E
+</code></pre>
+<p><strong>Step 6 — return the result:</strong></p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>InternalSplit {
+    separator_key: "kate",     // insert into parent
+    right_page: /* right */,   // store in pager
+}
+<span class="boring">}</span></code></pre>
+<h3 id="full-before--after"><a class="header" href="#full-before--after">Full before / after</a></h3>
+<pre><code>BEFORE (inserting kate→F into full internal node):
+
+        [grandparent]
+              │
+              ▼
+  L | bob→A | eve→B | henry→C | paul→D | zara→E
+
+
+AFTER (new_right_page_id = 9):
+
+           [grandparent]
+           now has "kate"→9 inserted
+                │           │
+                ▼           ▼
+  L|bob→A|eve→B|henry→C    F|paul→D|zara→E
+  (original page, rebuilt)  (new page 9)
+
+  "kate" is GONE from both children.
+  It lives only in the grandparent.
+</code></pre>
+<hr>
+<h2 id="leaf-split-vs-internal-split--side-by-side"><a class="header" href="#leaf-split-vs-internal-split--side-by-side">Leaf split vs internal split — side by side</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>Leaf split</th><th>Internal split</th></tr>
+</thead>
+<tbody>
+<tr><td>Where does the middle key go?</td><td><strong>Copied up</strong> — stays in right leaf + sent to parent</td><td><strong>Pushed up</strong> — only in parent, gone from children</td></tr>
+<tr><td>Right child’s leftmost entry</td><td>The first entry of the right half</td><td>The <strong>child pointer</strong> from the middle entry</td></tr>
+<tr><td>Why the difference?</td><td>Leaves need all keys for range scan via sibling chain</td><td>Internal nodes only route — parent has the key now</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="method-reference"><a class="header" href="#method-reference">Method reference</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new(page_id, leftmost_child)</code></td><td>Fresh internal page with a starting leftmost child</td></tr>
+<tr><td><code>from_page(p)</code></td><td>Wrap an existing <code>Page</code> as an internal node</td></tr>
+<tr><td><code>into_page(self)</code></td><td>Unwrap back to <code>Page</code></td></tr>
+<tr><td><code>page_id()</code></td><td>This node’s page ID</td></tr>
+<tr><td><code>slot_count()</code></td><td>Number of separator entries</td></tr>
+<tr><td><code>free_space_bytes()</code></td><td>Bytes left in the free gap</td></tr>
+<tr><td><code>leftmost_child()</code></td><td>Child page ID for keys &lt; first separator</td></tr>
+<tr><td><code>key_at(i)</code></td><td>Separator key at slot index <code>i</code></td></tr>
+<tr><td><code>child_at(i)</code></td><td>Right child page ID for separator at index <code>i</code></td></tr>
+<tr><td><code>find_child(key)</code></td><td>Binary search → which child page ID to follow</td></tr>
+<tr><td><code>insert_separator(key, child)</code></td><td>Add a routing entry; <code>Err("page full")</code> if no space</td></tr>
+<tr><td><code>insert_or_split(key, child, new_id)</code></td><td>Insert with split if needed; returns <code>Option&lt;InternalSplit&gt;</code></td></tr>
+</tbody>
+</table>
+</div>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../page/layout.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../btree/split.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../page/compaction.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../pager.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -461,11 +399,11 @@ free_start: 26 → 24   (= HEADER_SIZE + slot_count * SLOT_SIZE = 20 + 2*2)
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../page/layout.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../btree/split.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../page/compaction.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../pager.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
