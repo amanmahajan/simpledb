@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-99e30d83.js";
+            window.path_to_searchindex_js = "searchindex-d09e7969.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9abe0289.js"></script>
@@ -179,8 +179,13 @@
                     <main>
                         <h1 id="roadmap"><a class="header" href="#roadmap">Roadmap</a></h1>
 <p><code>simpledb</code> is a work-in-progress. The storage primitives are solid; the higher-level B-tree and durability layers are next.</p>
-<h2 id="b-tree-internal-nodes"><a class="header" href="#b-tree-internal-nodes">B-tree internal nodes</a></h2>
-<p>Leaf pages and splits are implemented, but there are no internal (non-leaf) nodes yet. <code>btree/tree.rs</code> holds only a stub:</p>
+<h2 id="b-tree-operations"><a class="header" href="#b-tree-operations">B-tree operations</a></h2>
+<p>The storage primitives are complete:</p>
+<ul>
+<li>✅ <code>LeafPage</code> / <code>LeafPageMut</code> with <code>insert_or_split</code> (copy-up)</li>
+<li>✅ <code>InternalPage</code> / <code>InternalPageMut</code> with <code>insert_or_split</code> (push-up)</li>
+</ul>
+<p><code>btree/tree.rs</code> holds only a stub:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>pub struct BTree {
@@ -190,7 +195,6 @@
 <span class="boring">}</span></code></pre>
 <p>What needs to be added:</p>
 <ul>
-<li>An <code>InternalPage</code> type that stores separator keys and child page IDs.</li>
 <li><code>BTree::insert</code> — walk the tree, find the correct leaf, call <code>insert_or_split</code>, and propagate the separator key up if a split occurred.</li>
 <li><code>BTree::get</code> — traverse internal nodes to reach the right leaf.</li>
 <li><code>BTree::remove</code> — delete from a leaf; handle underflow (merge or redistribute).</li>
