@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-99e30d83.js";
+            window.path_to_searchindex_js = "searchindex-d09e7969.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9abe0289.js"></script>
@@ -1109,7 +1109,7 @@ Parent now has separator "carol" pointing to page 6.
 <p>The caller takes the separator key and the new right page ID and inserts them into the parent:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>parent.insert_separator(separator_key, right_page.page_id())
+</span>parent.insert(separator_key, right_page.page_id())
 <span class="boring">}</span></code></pre>
 <p>This adds one new routing entry to the parent. The parent now knows: <em>“if key &gt;= ‘carol’, go to page 6.”</em></p>
 <pre><code>BEFORE split:
@@ -1134,7 +1134,7 @@ AFTER split (separator="carol", new right=pg6):
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let new_root = InternalPage::new(new_root_page_id, left_page_id);
-new_root.insert_separator(separator_key, right_page_id);
+new_root.insert(separator_key, right_page_id);
 <span class="boring">}</span></code></pre>
 <ul>
 <li><code>leftmost_child</code> of the new root = left page ID</li>
@@ -1156,7 +1156,7 @@ AFTER (tree grows one level taller):
 <p>This is the <strong>only moment the tree ever grows taller</strong>. Every other split just makes the tree wider by adding a new leaf and a new entry somewhere in an existing internal node.</p>
 <hr>
 <h3 id="what-if-the-parent-internal-node-is-also-full"><a class="header" href="#what-if-the-parent-internal-node-is-also-full">What if the parent internal node is also full?</a></h3>
-<p>When the caller tries <code>parent.insert_separator(...)</code> and the parent returns <code>"page full"</code>, the parent internal node must split too — producing its own separator key pushed up to <em>its</em> parent. This cascades upward until either a non-full ancestor is found or the root itself splits and a new root is created.</p>
+<p>When the caller tries <code>parent.insert(...)</code> and the parent returns <code>"page full"</code>, the parent internal node must split too — producing its own separator key pushed up to <em>its</em> parent. This cascades upward until either a non-full ancestor is found or the root itself splits and a new root is created.</p>
 <pre><code>Cascade example:
 
    Level 2 (root): split → new root created, tree grows taller
@@ -1280,12 +1280,26 @@ AFTER (tree grows one level taller):
 </div>
 <p>Notice <code>"carol"</code> → child A, because <code>"bob" &lt;= "carol" &lt; "eve"</code>. Carol lives in the range owned by separator <code>"bob"</code>.</p>
 <hr>
-<h2 id="insert_separator--adding-a-new-routing-entry"><a class="header" href="#insert_separator--adding-a-new-routing-entry"><code>insert_separator</code> — adding a new routing entry</a></h2>
+<h2 id="the-two-types-1"><a class="header" href="#the-two-types-1">The two types</a></h2>
+<p>Like <code>LeafPage</code> / <code>LeafPageMut</code>, internal nodes come in two flavours:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct InternalPage {        // owns the page — read-only
+    page: Page,
+}
+
+pub struct InternalPageMut&lt;'a&gt; { // borrows the page mutably — can insert and split
+    page: &amp;'a mut Page,
+}
+<span class="boring">}</span></code></pre>
+<p><code>InternalPage</code> is used when the pager hands you an owned <code>Page</code> and you only need to read or route. <code>InternalPageMut</code> is used when you need to write: inserting a separator after a child splits, or splitting the internal node itself.</p>
+<hr>
+<h2 id="insert--adding-a-new-routing-entry"><a class="header" href="#insert--adding-a-new-routing-entry"><code>insert</code> — adding a new routing entry</a></h2>
 <p>When a leaf below this node splits, the split produces a <code>separator_key</code> and a new right page. The parent internal node must record this:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub fn insert_separator(&amp;mut self, key: &amp;[u8], right_child: u32) -&gt; Result&lt;(), &amp;'static str&gt; {
-    self.page.put(key, &amp;right_child.to_le_bytes()).map(|_| ())
+</span>pub fn insert(&amp;mut self, key: &amp;[u8], right_child: u32) -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, &amp;'static str&gt; {
+    self.page.put(key, &amp;right_child.to_le_bytes())
 }
 <span class="boring">}</span></code></pre>
 <p>The child page ID is stored as the value (4 raw bytes, little-endian). The separator key is the key. The underlying <code>Page::put</code> keeps the slot array sorted automatically.</p>
@@ -1367,6 +1381,7 @@ AFTER (new_right_page_id = 9):
 </div>
 <hr>
 <h2 id="method-reference-1"><a class="header" href="#method-reference-1">Method reference</a></h2>
+<h3 id="internalpage-read-only"><a class="header" href="#internalpage-read-only"><code>InternalPage</code> (read-only)</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -1378,12 +1393,25 @@ AFTER (new_right_page_id = 9):
 <tr><td><code>into_page(self)</code></td><td>Unwrap back to <code>Page</code></td></tr>
 <tr><td><code>page_id()</code></td><td>This node’s page ID</td></tr>
 <tr><td><code>slot_count()</code></td><td>Number of separator entries</td></tr>
-<tr><td><code>free_space_bytes()</code></td><td>Bytes left in the free gap</td></tr>
 <tr><td><code>leftmost_child()</code></td><td>Child page ID for keys &lt; first separator</td></tr>
 <tr><td><code>key_at(i)</code></td><td>Separator key at slot index <code>i</code></td></tr>
 <tr><td><code>child_at(i)</code></td><td>Right child page ID for separator at index <code>i</code></td></tr>
 <tr><td><code>find_child(key)</code></td><td>Binary search → which child page ID to follow</td></tr>
-<tr><td><code>insert_separator(key, child)</code></td><td>Add a routing entry; <code>Err("page full")</code> if no space</td></tr>
+<tr><td><code>entries()</code></td><td>All <code>(separator_key, right_child)</code> pairs as a <code>Vec</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="internalpagemuta-mutable"><a class="header" href="#internalpagemuta-mutable"><code>InternalPageMut&lt;'a&gt;</code> (mutable)</a></h3>
+<p>All <code>InternalPage</code> read methods are available, plus:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new(page)</code></td><td>Borrow a <code>&amp;mut Page</code> as a mutable internal node</td></tr>
+<tr><td><code>set_leftmost_child(id)</code></td><td>Update the leftmost child pointer</td></tr>
+<tr><td><code>insert(key, child)</code></td><td>Add a routing entry; returns <code>Err("page full")</code> if no space</td></tr>
 <tr><td><code>insert_or_split(key, child, new_id)</code></td><td>Insert with split if needed; returns <code>Option&lt;InternalSplit&gt;</code></td></tr>
 </tbody>
 </table>
@@ -1493,8 +1521,13 @@ page_compaction_threshold/75%
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="roadmap"><a class="header" href="#roadmap">Roadmap</a></h1>
 <p><code>simpledb</code> is a work-in-progress. The storage primitives are solid; the higher-level B-tree and durability layers are next.</p>
-<h2 id="b-tree-internal-nodes"><a class="header" href="#b-tree-internal-nodes">B-tree internal nodes</a></h2>
-<p>Leaf pages and splits are implemented, but there are no internal (non-leaf) nodes yet. <code>btree/tree.rs</code> holds only a stub:</p>
+<h2 id="b-tree-operations"><a class="header" href="#b-tree-operations">B-tree operations</a></h2>
+<p>The storage primitives are complete:</p>
+<ul>
+<li>✅ <code>LeafPage</code> / <code>LeafPageMut</code> with <code>insert_or_split</code> (copy-up)</li>
+<li>✅ <code>InternalPage</code> / <code>InternalPageMut</code> with <code>insert_or_split</code> (push-up)</li>
+</ul>
+<p><code>btree/tree.rs</code> holds only a stub:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>pub struct BTree {
@@ -1504,7 +1537,6 @@ page_compaction_threshold/75%
 <span class="boring">}</span></code></pre>
 <p>What needs to be added:</p>
 <ul>
-<li>An <code>InternalPage</code> type that stores separator keys and child page IDs.</li>
 <li><code>BTree::insert</code> — walk the tree, find the correct leaf, call <code>insert_or_split</code>, and propagate the separator key up if a split occurred.</li>
 <li><code>BTree::get</code> — traverse internal nodes to reach the right leaf.</li>
 <li><code>BTree::remove</code> — delete from a leaf; handle underflow (merge or redistribute).</li>

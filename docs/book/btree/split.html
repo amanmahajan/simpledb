@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-99e30d83.js";
+            window.path_to_searchindex_js = "../searchindex-d09e7969.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-9abe0289.js"></script>
@@ -357,7 +357,7 @@ Parent now has separator "carol" pointing to page 6.
 <p>The caller takes the separator key and the new right page ID and inserts them into the parent:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>parent.insert_separator(separator_key, right_page.page_id())
+</span>parent.insert(separator_key, right_page.page_id())
 <span class="boring">}</span></code></pre>
 <p>This adds one new routing entry to the parent. The parent now knows: <em>“if key &gt;= ‘carol’, go to page 6.”</em></p>
 <pre><code>BEFORE split:
@@ -382,7 +382,7 @@ AFTER split (separator="carol", new right=pg6):
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let new_root = InternalPage::new(new_root_page_id, left_page_id);
-new_root.insert_separator(separator_key, right_page_id);
+new_root.insert(separator_key, right_page_id);
 <span class="boring">}</span></code></pre>
 <ul>
 <li><code>leftmost_child</code> of the new root = left page ID</li>
@@ -404,7 +404,7 @@ AFTER (tree grows one level taller):
 <p>This is the <strong>only moment the tree ever grows taller</strong>. Every other split just makes the tree wider by adding a new leaf and a new entry somewhere in an existing internal node.</p>
 <hr>
 <h3 id="what-if-the-parent-internal-node-is-also-full"><a class="header" href="#what-if-the-parent-internal-node-is-also-full">What if the parent internal node is also full?</a></h3>
-<p>When the caller tries <code>parent.insert_separator(...)</code> and the parent returns <code>"page full"</code>, the parent internal node must split too — producing its own separator key pushed up to <em>its</em> parent. This cascades upward until either a non-full ancestor is found or the root itself splits and a new root is created.</p>
+<p>When the caller tries <code>parent.insert(...)</code> and the parent returns <code>"page full"</code>, the parent internal node must split too — producing its own separator key pushed up to <em>its</em> parent. This cascades upward until either a non-full ancestor is found or the root itself splits and a new root is created.</p>
 <pre><code>Cascade example:
 
    Level 2 (root): split → new root created, tree grows taller

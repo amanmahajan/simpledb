@@ -123,13 +123,31 @@ Notice `"carol"` → child A, because `"bob" <= "carol" < "eve"`. Carol lives in
 
 ---
 
-## `insert_separator` — adding a new routing entry
+## The two types
+
+Like `LeafPage` / `LeafPageMut`, internal nodes come in two flavours:
+
+```rust
+pub struct InternalPage {        // owns the page — read-only
+    page: Page,
+}
+
+pub struct InternalPageMut<'a> { // borrows the page mutably — can insert and split
+    page: &'a mut Page,
+}
+```
+
+`InternalPage` is used when the pager hands you an owned `Page` and you only need to read or route. `InternalPageMut` is used when you need to write: inserting a separator after a child splits, or splitting the internal node itself.
+
+---
+
+## `insert` — adding a new routing entry
 
 When a leaf below this node splits, the split produces a `separator_key` and a new right page. The parent internal node must record this:
 
 ```rust
-pub fn insert_separator(&mut self, key: &[u8], right_child: u32) -> Result<(), &'static str> {
-    self.page.put(key, &right_child.to_le_bytes()).map(|_| ())
+pub fn insert(&mut self, key: &[u8], right_child: u32) -> Result<Option<Vec<u8>>, &'static str> {
+    self.page.put(key, &right_child.to_le_bytes())
 }
 ```
 
@@ -243,6 +261,8 @@ AFTER (new_right_page_id = 9):
 
 ## Method reference
 
+### `InternalPage` (read-only)
+
 | Method | What it does |
 |--------|-------------|
 | `new(page_id, leftmost_child)` | Fresh internal page with a starting leftmost child |
@@ -250,10 +270,19 @@ AFTER (new_right_page_id = 9):
 | `into_page(self)` | Unwrap back to `Page` |
 | `page_id()` | This node's page ID |
 | `slot_count()` | Number of separator entries |
-| `free_space_bytes()` | Bytes left in the free gap |
 | `leftmost_child()` | Child page ID for keys < first separator |
 | `key_at(i)` | Separator key at slot index `i` |
 | `child_at(i)` | Right child page ID for separator at index `i` |
 | `find_child(key)` | Binary search → which child page ID to follow |
-| `insert_separator(key, child)` | Add a routing entry; `Err("page full")` if no space |
+| `entries()` | All `(separator_key, right_child)` pairs as a `Vec` |
+
+### `InternalPageMut<'a>` (mutable)
+
+All `InternalPage` read methods are available, plus:
+
+| Method | What it does |
+|--------|-------------|
+| `new(page)` | Borrow a `&mut Page` as a mutable internal node |
+| `set_leftmost_child(id)` | Update the leftmost child pointer |
+| `insert(key, child)` | Add a routing entry; returns `Err("page full")` if no space |
 | `insert_or_split(key, child, new_id)` | Insert with split if needed; returns `Option<InternalSplit>` |
