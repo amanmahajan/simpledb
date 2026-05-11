@@ -2,9 +2,14 @@
 
 `simpledb` is a work-in-progress. The storage primitives are solid; the higher-level B-tree and durability layers are next.
 
-## B-tree internal nodes
+## B-tree operations
 
-Leaf pages and splits are implemented, but there are no internal (non-leaf) nodes yet. `btree/tree.rs` holds only a stub:
+The storage primitives are complete:
+
+- ✅ `LeafPage` / `LeafPageMut` with `insert_or_split` (copy-up)
+- ✅ `InternalPage` / `InternalPageMut` with `insert_or_split` (push-up)
+
+`btree/tree.rs` holds only a stub:
 
 ```rust
 pub struct BTree {
@@ -15,7 +20,6 @@ pub struct BTree {
 
 What needs to be added:
 
-- An `InternalPage` type that stores separator keys and child page IDs.
 - `BTree::insert` — walk the tree, find the correct leaf, call `insert_or_split`, and propagate the separator key up if a split occurred.
 - `BTree::get` — traverse internal nodes to reach the right leaf.
 - `BTree::remove` — delete from a leaf; handle underflow (merge or redistribute).

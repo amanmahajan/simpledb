@@ -236,7 +236,7 @@ There are two cases.
 The caller takes the separator key and the new right page ID and inserts them into the parent:
 
 ```rust
-parent.insert_separator(separator_key, right_page.page_id())
+parent.insert(separator_key, right_page.page_id())
 ```
 
 This adds one new routing entry to the parent. The parent now knows: *"if key >= 'carol', go to page 6."*
@@ -268,7 +268,7 @@ A tree starts as a single leaf page that is also the root. When that leaf splits
 
 ```rust
 let new_root = InternalPage::new(new_root_page_id, left_page_id);
-new_root.insert_separator(separator_key, right_page_id);
+new_root.insert(separator_key, right_page_id);
 ```
 
 - `leftmost_child` of the new root = left page ID
@@ -295,7 +295,7 @@ This is the **only moment the tree ever grows taller**. Every other split just m
 
 ### What if the parent internal node is also full?
 
-When the caller tries `parent.insert_separator(...)` and the parent returns `"page full"`, the parent internal node must split too — producing its own separator key pushed up to *its* parent. This cascades upward until either a non-full ancestor is found or the root itself splits and a new root is created.
+When the caller tries `parent.insert(...)` and the parent returns `"page full"`, the parent internal node must split too — producing its own separator key pushed up to *its* parent. This cascades upward until either a non-full ancestor is found or the root itself splits and a new root is created.
 
 ```
 Cascade example:
