@@ -18,7 +18,10 @@ fn split_with_total_entries(
     for i in 0..(total_entries - 1) {
         let k = sep_key(i, key_len);
         let child = (i + 1) as u32;
-        assert!(internal.insert(&k, child).is_ok(), "failed to seed entry {i}");
+        assert!(
+            internal.insert(&k, child).is_ok(),
+            "failed to seed entry {i}"
+        );
     }
 
     let split_key = sep_key(total_entries - 1, key_len);
@@ -106,7 +109,11 @@ fn insert_or_split_odd_total_entries() {
 
     assert_eq!(left.slot_count(), 2, "left should have 2 separators");
     assert_eq!(right.slot_count(), 2, "right should have 2 separators");
-    assert_eq!(sep, sep_key(2, 2000), "pushed-up key should be the middle entry");
+    assert_eq!(
+        sep,
+        sep_key(2, 2000),
+        "pushed-up key should be the middle entry"
+    );
 }
 
 #[test]
@@ -117,7 +124,11 @@ fn insert_or_split_even_total_entries() {
 
     assert_eq!(left.slot_count(), 3, "left should have 3 separators");
     assert_eq!(right.slot_count(), 2, "right should have 2 separators");
-    assert_eq!(sep, sep_key(3, 1500), "pushed-up key should be the middle entry");
+    assert_eq!(
+        sep,
+        sep_key(3, 1500),
+        "pushed-up key should be the middle entry"
+    );
 }
 
 #[test]
@@ -155,8 +166,15 @@ fn insert_or_split_no_key_loss() {
 
     recovered.sort_by(|a, b| a.0.cmp(&b.0));
 
-    assert_eq!(recovered.len(), expected.len(), "no entry should be lost or duplicated");
-    assert_eq!(recovered, expected, "all (separator, child) pairs should be preserved");
+    assert_eq!(
+        recovered.len(),
+        expected.len(),
+        "no entry should be lost or duplicated"
+    );
+    assert_eq!(
+        recovered, expected,
+        "all (separator, child) pairs should be preserved"
+    );
 }
 
 #[test]

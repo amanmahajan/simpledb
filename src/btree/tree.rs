@@ -113,7 +113,11 @@ impl BTree {
             leaf.insert_or_split(key, val, new_right_leaf_id)?
         };
 
-        let Some(LeafSplit { separator_key, right_page }) = split else {
+        let Some(LeafSplit {
+            separator_key,
+            right_page,
+        }) = split
+        else {
             return Ok(());
         };
 
@@ -137,7 +141,11 @@ impl BTree {
                 node.insert_or_split(&sep_key, right_child, new_right_id)?
             };
 
-            let Some(InternalSplit { separator_key, right_page }) = split else {
+            let Some(InternalSplit {
+                separator_key,
+                right_page,
+            }) = split
+            else {
                 return Ok(());
             };
 

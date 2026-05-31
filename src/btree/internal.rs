@@ -18,16 +18,16 @@ pub struct InternalPage {
     page: Page,
 }
 
-pub struct  InternalSplit {
+pub struct InternalSplit {
     pub separator_key: Vec<u8>,
     pub right_page: InternalPage,
 }
 
 impl InternalPage {
-    pub fn new(page_id:u32, leftmost_child:u32) -> Self {
+    pub fn new(page_id: u32, leftmost_child: u32) -> Self {
         let mut page = Page::new(page_id);
         page.set_next_leaf_page_id(Some(leftmost_child));
-        Self{page}
+        Self { page }
     }
 
     pub fn from_page(p: Page) -> Self {
@@ -49,7 +49,7 @@ impl InternalPage {
     pub fn free_space_bytes(&self) -> usize {
         self.page.free_space_bytes()
     }
-    
+
     pub fn leftmost_child(&self) -> u32 {
         self.page.next_leaf_page_id().unwrap_or(0)
     }
@@ -73,9 +73,9 @@ impl InternalPage {
         let mut lo = 0usize;
         let mut hi = n;
         while lo < hi {
-            let mid = (lo+ hi)/2;
+            let mid = (lo + hi) / 2;
             if self.key_at(mid) <= key {
-                lo = mid+1;
+                lo = mid + 1;
             } else {
                 hi = mid;
             }
@@ -180,7 +180,11 @@ impl<'a> InternalPageMut<'a> {
             .collect()
     }
 
-    pub fn insert(&mut self, sep_key: &[u8], right_child: u32) -> Result<Option<Vec<u8>>, &'static str> {
+    pub fn insert(
+        &mut self,
+        sep_key: &[u8],
+        right_child: u32,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
         self.page.put(sep_key, &right_child.to_le_bytes())
     }
 

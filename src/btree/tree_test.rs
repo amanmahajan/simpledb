@@ -93,7 +93,10 @@ fn scan_from_start_key_returns_gte_entries() {
         tree.insert(&k(i), &small_val(i)).unwrap();
     }
     let start = k(5);
-    let got: Vec<Vec<u8>> = tree.scan(Some(&start)).map(|(key, _)| key.to_vec()).collect();
+    let got: Vec<Vec<u8>> = tree
+        .scan(Some(&start))
+        .map(|(key, _)| key.to_vec())
+        .collect();
     let expected: Vec<Vec<u8>> = (5..n).map(k).collect();
     assert_eq!(got, expected);
 }
@@ -107,8 +110,14 @@ fn scan_from_key_between_existing_keys() {
     }
     // Start scan from an odd key (k(3) = "key_0003"), should start at k(4)
     let start = k(3);
-    let got: Vec<Vec<u8>> = tree.scan(Some(&start)).map(|(key, _)| key.to_vec()).collect();
-    let expected: Vec<Vec<u8>> = (0..10usize).filter(|x| x % 2 == 0 && *x >= 4).map(k).collect();
+    let got: Vec<Vec<u8>> = tree
+        .scan(Some(&start))
+        .map(|(key, _)| key.to_vec())
+        .collect();
+    let expected: Vec<Vec<u8>> = (0..10usize)
+        .filter(|x| x % 2 == 0 && *x >= 4)
+        .map(k)
+        .collect();
     assert_eq!(got, expected);
 }
 
@@ -184,7 +193,10 @@ fn scan_from_mid_after_splits() {
         tree.insert(&k(i), &large_val(i)).unwrap();
     }
     let start = k(25);
-    let got: Vec<Vec<u8>> = tree.scan(Some(&start)).map(|(key, _)| key.to_vec()).collect();
+    let got: Vec<Vec<u8>> = tree
+        .scan(Some(&start))
+        .map(|(key, _)| key.to_vec())
+        .collect();
     let expected: Vec<Vec<u8>> = (25..n).map(k).collect();
     assert_eq!(got, expected);
 }
