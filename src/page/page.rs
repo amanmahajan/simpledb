@@ -1,6 +1,6 @@
 // page.rs
 use crate::btree::key::Key;
-use crate::btree::tuple::{Tuple, TupleBuilder};
+use crate::btree::tuple::TupleBuilder;
 use crate::utils::byte::*;
 
 /// Peanut DB - 8KB slotted page (InnoDB-style 2-byte record directory).
@@ -320,8 +320,7 @@ impl Page {
             let mid = (lo + hi) / 2;
             let tuple_off = self.read_slot(mid) as usize;
 
-            let tuple = Tuple::from(&self.data[tuple_off..]);
-            let mid_key = tuple.key();
+            let mid_key = Key::from(self.read_key(tuple_off));
 
             match mid_key.cmp(&search_key) {
                 std::cmp::Ordering::Equal => return SearchResult::Found(mid),
@@ -376,11 +375,7 @@ impl Page {
                 }
                 let old_off = self.read_slot(i) as usize;
 
-                // Read old tuple (zero-copy view)
-                let old_tuple = Tuple::from(&self.data[old_off..]);
-
-                // Capture old value
-                let old_val = old_tuple.bytes().to_vec();
+                let old_val = self.read_tuple_val(old_off).to_vec();
 
                 // Tombstone old tuple (flag byte)
                 self.data[old_off] = 1;
