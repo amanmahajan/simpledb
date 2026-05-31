@@ -4,9 +4,11 @@
 
 ```
 ┌──────────────────────────────────────┐
-│               BTree                  │  (btree/tree.rs — stub)
+│               BTree                  │  (btree/tree.rs)
 │  root_page_id: u32                   │
+│  height: u32                         │
 │  pager: Pager                        │
+│  insert / get / remove / scan        │
 └────────────────┬─────────────────────┘
                  │ uses
                  ▼
@@ -42,28 +44,43 @@
 ```
 caller
   │
-  │  LeafPageMut::insert_or_split(key, val, new_page_id)
+  │  BTree::insert(key, val)
   ▼
-LeafPageMut
+BTree
+  │  find_leaf(key)          ← descend height-1 internal levels
+  │  alloc_page_id()         ← reserve ID for potential right page
+  ▼
+LeafPageMut::insert_or_split(key, val, new_page_id)
   │  Page::put(key, val)
   ▼
 Page
-  │  find_slot(key)         ← binary search on slot array
-  │  alloc_tuple(len)       ← claim bytes from tuple region
-  │  write_tuple(off, ...)  ← serialize tombstone+key_len+val_len+key+val
-  │  alloc_slot / shift     ← insert u16 offset into sorted slot array
+  │  find_slot(key)          ← binary search on slot array
+  │  alloc_tuple(len)        ← claim bytes from tuple region
+  │  write_tuple(off, ...)   ← serialize tombstone+key_len+val_len+key+val
+  │  alloc_slot / shift      ← insert u16 offset into sorted slot array
   ▼
   [page bytes updated in-place]
+
+if insert fit → Ok(None) → BTree::insert returns Ok(())
 
 if "page full"
   ▼
 LeafPageMut::insert_or_split
-  │  collect all entries + new entry
-  │  sort by key
-  │  split at midpoint → left page, right page
-  │  wire sibling pointers  (left.next = right, right.next = old_next)
+  │  collect all entries + new entry, sort
+  │  split at midpoint → left page (in-place), right page (new)
+  │  wire sibling pointers (left.next = right, right.next = old_next)
   ▼
   LeafSplit { separator_key, right_page }
+  │
+  ▼
+BTree::propagate_split(path, sep_key, right_child)
+  │  for each internal node on path (bottom-up):
+  │    InternalPageMut::insert_or_split(sep, child, new_id)
+  │    if no split → done
+  │    if split → push separator to grandparent
+  │  if root split → create new root, height += 1
+  ▼
+  Ok(())
 ```
 
 ## Key design principles

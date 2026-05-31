@@ -22,6 +22,7 @@
 - [Leaf Pages](btree/leaf.md)
 - [Leaf Splits](btree/split.md)
 - [Internal Pages](btree/internal.md)
+- [The B-Tree](btree/tree.md)
 
 # Pager
 

@@ -1,29 +1,21 @@
 # Roadmap
 
-`simpledb` is a work-in-progress. The storage primitives are solid; the higher-level B-tree and durability layers are next.
+`simpledb` is a work-in-progress. The storage and B-tree layers are complete; durability and concurrency are next.
 
 ## B-tree operations
 
-The storage primitives are complete:
+As of the `BTree` milestone, all core tree operations are complete.
 
 - ✅ `LeafPage` / `LeafPageMut` with `insert_or_split` (copy-up)
 - ✅ `InternalPage` / `InternalPageMut` with `insert_or_split` (push-up)
+- ✅ `BTree::insert` — traverses internal nodes, inserts at the correct leaf, cascades splits up to a new root when needed
+- ✅ `BTree::get` — traverses internal nodes to reach the right leaf and returns the value
+- ✅ `BTree::remove` — deletes from the leaf (no rebalancing yet — see below)
+- ✅ `BTree::scan` — lazy `Scan` iterator that starts at a given key and follows the leaf sibling chain
 
-`btree/tree.rs` holds only a stub:
+Remaining B-tree work:
 
-```rust
-pub struct BTree {
-    root_page_id: u32,
-    pager: Pager,
-}
-```
-
-What needs to be added:
-
-- `BTree::insert` — walk the tree, find the correct leaf, call `insert_or_split`, and propagate the separator key up if a split occurred.
-- `BTree::get` — traverse internal nodes to reach the right leaf.
-- `BTree::remove` — delete from a leaf; handle underflow (merge or redistribute).
-- `BTree::range_scan` — start at the left-most matching leaf and follow sibling pointers.
+- `BTree::remove` rebalancing — when a leaf drops below half-full after a delete, merge it with a sibling or redistribute entries. Currently leaves are left sparse.
 
 ## Disk I/O
 

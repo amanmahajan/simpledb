@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d09e7969.js";
+            window.path_to_searchindex_js = "searchindex-a4cf5d0e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-9abe0289.js"></script>
+        <script src="toc-de85d157.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,27 +178,20 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="roadmap"><a class="header" href="#roadmap">Roadmap</a></h1>
-<p><code>simpledb</code> is a work-in-progress. The storage primitives are solid; the higher-level B-tree and durability layers are next.</p>
+<p><code>simpledb</code> is a work-in-progress. The storage and B-tree layers are complete; durability and concurrency are next.</p>
 <h2 id="b-tree-operations"><a class="header" href="#b-tree-operations">B-tree operations</a></h2>
-<p>The storage primitives are complete:</p>
+<p>As of the <code>BTree</code> milestone, all core tree operations are complete.</p>
 <ul>
 <li>✅ <code>LeafPage</code> / <code>LeafPageMut</code> with <code>insert_or_split</code> (copy-up)</li>
 <li>✅ <code>InternalPage</code> / <code>InternalPageMut</code> with <code>insert_or_split</code> (push-up)</li>
+<li>✅ <code>BTree::insert</code> — traverses internal nodes, inserts at the correct leaf, cascades splits up to a new root when needed</li>
+<li>✅ <code>BTree::get</code> — traverses internal nodes to reach the right leaf and returns the value</li>
+<li>✅ <code>BTree::remove</code> — deletes from the leaf (no rebalancing yet — see below)</li>
+<li>✅ <code>BTree::scan</code> — lazy <code>Scan</code> iterator that starts at a given key and follows the leaf sibling chain</li>
 </ul>
-<p><code>btree/tree.rs</code> holds only a stub:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub struct BTree {
-    root_page_id: u32,
-    pager: Pager,
-}
-<span class="boring">}</span></code></pre>
-<p>What needs to be added:</p>
+<p>Remaining B-tree work:</p>
 <ul>
-<li><code>BTree::insert</code> — walk the tree, find the correct leaf, call <code>insert_or_split</code>, and propagate the separator key up if a split occurred.</li>
-<li><code>BTree::get</code> — traverse internal nodes to reach the right leaf.</li>
-<li><code>BTree::remove</code> — delete from a leaf; handle underflow (merge or redistribute).</li>
-<li><code>BTree::range_scan</code> — start at the left-most matching leaf and follow sibling pointers.</li>
+<li><code>BTree::remove</code> rebalancing — when a leaf drops below half-full after a delete, merge it with a sibling or redistribute entries. Currently leaves are left sparse.</li>
 </ul>
 <h2 id="disk-io"><a class="header" href="#disk-io">Disk I/O</a></h2>
 <p>The <code>Pager</code> currently stores pages in a <code>HashMap</code>. To make the database persistent:</p>

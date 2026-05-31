@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d09e7969.js";
+            window.path_to_searchindex_js = "searchindex-a4cf5d0e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-9abe0289.js"></script>
+        <script src="toc-de85d157.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -220,9 +220,11 @@ docs/         This book
 <h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
 <h2 id="module-dependency-graph"><a class="header" href="#module-dependency-graph">Module dependency graph</a></h2>
 <pre><code>┌──────────────────────────────────────┐
-│               BTree                  │  (btree/tree.rs — stub)
+│               BTree                  │  (btree/tree.rs)
 │  root_page_id: u32                   │
+│  height: u32                         │
 │  pager: Pager                        │
+│  insert / get / remove / scan        │
 └────────────────┬─────────────────────┘
                  │ uses
                  ▼
@@ -255,28 +257,43 @@ docs/         This book
 <h2 id="data-flow-inserting-a-key-value-pair"><a class="header" href="#data-flow-inserting-a-key-value-pair">Data flow: inserting a key-value pair</a></h2>
 <pre><code>caller
   │
-  │  LeafPageMut::insert_or_split(key, val, new_page_id)
+  │  BTree::insert(key, val)
   ▼
-LeafPageMut
+BTree
+  │  find_leaf(key)          ← descend height-1 internal levels
+  │  alloc_page_id()         ← reserve ID for potential right page
+  ▼
+LeafPageMut::insert_or_split(key, val, new_page_id)
   │  Page::put(key, val)
   ▼
 Page
-  │  find_slot(key)         ← binary search on slot array
-  │  alloc_tuple(len)       ← claim bytes from tuple region
-  │  write_tuple(off, ...)  ← serialize tombstone+key_len+val_len+key+val
-  │  alloc_slot / shift     ← insert u16 offset into sorted slot array
+  │  find_slot(key)          ← binary search on slot array
+  │  alloc_tuple(len)        ← claim bytes from tuple region
+  │  write_tuple(off, ...)   ← serialize tombstone+key_len+val_len+key+val
+  │  alloc_slot / shift      ← insert u16 offset into sorted slot array
   ▼
   [page bytes updated in-place]
+
+if insert fit → Ok(None) → BTree::insert returns Ok(())
 
 if "page full"
   ▼
 LeafPageMut::insert_or_split
-  │  collect all entries + new entry
-  │  sort by key
-  │  split at midpoint → left page, right page
-  │  wire sibling pointers  (left.next = right, right.next = old_next)
+  │  collect all entries + new entry, sort
+  │  split at midpoint → left page (in-place), right page (new)
+  │  wire sibling pointers (left.next = right, right.next = old_next)
   ▼
   LeafSplit { separator_key, right_page }
+  │
+  ▼
+BTree::propagate_split(path, sep_key, right_child)
+  │  for each internal node on path (bottom-up):
+  │    InternalPageMut::insert_or_split(sep, child, new_id)
+  │    if no split → done
+  │    if split → push separator to grandparent
+  │  if root split → create new root, height += 1
+  ▼
+  Ok(())
 </code></pre>
 <h2 id="key-design-principles"><a class="header" href="#key-design-principles">Key design principles</a></h2>
 <p><strong>Fixed-size pages.</strong> Every page is exactly 8 KB, matching typical OS and SSD page sizes. This makes future disk I/O straightforward.</p>
@@ -1417,6 +1434,304 @@ AFTER (new_right_page_id = 9):
 </table>
 </div>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-b-tree"><a class="header" href="#the-b-tree">The B-Tree</a></h1>
+<h2 id="what-problem-does-it-solve"><a class="header" href="#what-problem-does-it-solve">What problem does it solve?</a></h2>
+<p>You have hundreds of thousands of key-value pairs. You need to find any one of them in microseconds. You need to insert new ones without rebuilding everything. You need to scan a range of them in sorted order.</p>
+<p>A flat array of key-value pairs lets you scan cheaply but requires rewriting half the array on every insert. A hash table gives you O(1) lookup but destroys sorted order. A B+ tree threads the needle: O(log n) insert and lookup, <em>and</em> O(k) range scans, where k is the number of results.</p>
+<p><code>BTree</code> in <code>btree/tree.rs</code> is the top of the stack. It owns the <code>Pager</code>, knows the root, and ties everything together — leaf inserts, split cascades, sibling-chain scans.</p>
+<hr>
+<h2 id="think-of-a-multi-storey-filing-room"><a class="header" href="#think-of-a-multi-storey-filing-room">Think of a multi-storey filing room</a></h2>
+<p>Imagine a library with physical file drawers. The drawers themselves (leaf pages) hold the actual folders. On the ground floor there’s a wall of index cards (an internal page) that says <em>“surnames A–M: go to room 3; N–Z: go to room 7.”</em> If you have many rooms, you might need a floor directory that points to the right index-card wall.</p>
+<p>The <code>BTree</code> is the librarian who knows how many floors there are, which floor is the index and which floor holds the actual folders, and who handles what happens when a drawer is full and needs a second one.</p>
+<hr>
+<h2 id="the-struct"><a class="header" href="#the-struct">The struct</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct BTree {
+    root_page_id: u32,
+    height: u32,
+    pager: Pager,
+}
+<span class="boring">}</span></code></pre>
+<p>Three fields. That’s it.</p>
+<p><strong><code>root_page_id</code></strong> is the page ID of the topmost node. Everything starts here. When the tree is empty it’s <code>0</code> (a sentinel — page IDs start at 1).</p>
+<p><strong><code>height</code></strong> describes the tree’s shape:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>height</code></th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>0</code></td><td>Empty — no pages allocated yet</td></tr>
+<tr><td><code>1</code></td><td>Root is a leaf page; no internal nodes at all</td></tr>
+<tr><td><code>2</code></td><td>Root is an internal page; its children are leaf pages</td></tr>
+<tr><td><code>3</code></td><td>Root → internal → internal → leaves</td></tr>
+<tr><td>…</td><td>Each level adds one layer of internal routing</td></tr>
+</tbody>
+</table>
+</div>
+<p>Knowing <code>height</code> is critical. It tells <code>find_leaf</code> exactly how many internal levels to traverse before it reaches a leaf. Without it you’d need to store a “is this page a leaf?” flag inside every page header.</p>
+<p><strong><code>pager</code></strong> owns every page in existence. All 8KB of them live in a <code>HashMap&lt;u32, Page&gt;</code>. The B-tree borrows pages from the pager, modifies them, and stores new ones.</p>
+<hr>
+<h2 id="inserting-a-key-value-pair"><a class="header" href="#inserting-a-key-value-pair">Inserting a key-value pair</a></h2>
+<h3 id="the-happy-path-no-split"><a class="header" href="#the-happy-path-no-split">The happy path (no split)</a></h3>
+<p>You call <code>tree.insert(b"alice", b"data")</code>. Here is what happens, step by step:</p>
+<ol>
+<li>
+<p>If the tree is empty (<code>height == 0</code>), create a fresh leaf page in the pager, record it as the root, set <code>height = 1</code>.</p>
+</li>
+<li>
+<p>Call <code>find_leaf("alice")</code> to walk down to the right leaf page. For a freshly bootstrapped tree this returns the root page immediately.</p>
+</li>
+<li>
+<p>Ask the leaf to insert the entry. The page has room → insert succeeds → done.</p>
+</li>
+</ol>
+<pre><code>After inserting "alice", "bob", "carol" into a fresh tree (height=1):
+
+root_page_id = 1
+height = 1
+
+Page 1 (leaf, also the root)
+┌─────────────────────────┐
+│ alice → data_a          │
+│ bob   → data_b          │
+│ carol → data_c          │
+└─────────────────────────┘
+next_leaf = None
+</code></pre>
+<h3 id="when-the-leaf-is-full--the-first-split"><a class="header" href="#when-the-leaf-is-full--the-first-split">When the leaf is full — the first split</a></h3>
+<p>Eventually you fill the leaf. The next insert causes <code>insert_or_split</code> to return a <code>LeafSplit</code> (see <a href="#leaf-splits">Leaf Splits</a>).</p>
+<p>The split gives you two things: a <code>separator_key</code> and a new <code>right_page</code>. You must now store the right page in the pager and record the separator somewhere in an internal node. If no parent exists (height was 1, root was a leaf), you create a brand-new internal root and the tree grows one level.</p>
+<pre><code>Before (inserting "dave" into a full leaf):
+
+root_page_id = 1, height = 1
+
+Page 1 (leaf, full)
+┌─────────────────────────┐
+│ alice → data_a          │
+│ bob   → data_b          │  ← "dave" won't fit
+│ carol → data_c          │
+│ eve   → data_e          │
+└─────────────────────────┘
+
+
+After (leaf splits at "carol"; new internal root created):
+
+root_page_id = 3, height = 2
+
+Page 3 (new internal root)
+leftmost=1, [carol→2]
+      │           │
+      ▼           ▼
+Page 1 (leaf)   Page 2 (new leaf)
+┌──────────┐    ┌──────────────┐
+│ alice    │    │ carol        │
+│ bob      │    │ dave         │──► None
+└──────────┘    │ eve          │
+    ──►Page 2   └──────────────┘
+</code></pre>
+<p>The separator <code>"carol"</code> lives in the new root. The old root page (1) keeps its left half. The new page (2) gets the right half. Height becomes 2.</p>
+<hr>
+<h2 id="find_leaf--navigating-to-the-right-page"><a class="header" href="#find_leaf--navigating-to-the-right-page"><code>find_leaf</code> — navigating to the right page</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn find_leaf(&amp;self, key: &amp;[u8]) -&gt; (u32, Vec&lt;u32&gt;) {
+    let mut path = Vec::new();
+    let mut current = self.root_page_id;
+    for _ in 1..self.height {       // iterate once per internal level
+        path.push(current);
+        let page = self.pager.get(current).unwrap().clone();
+        let node = InternalPage::from_page(page);
+        current = node.find_child(key);
+    }
+    (current, path)
+}
+<span class="boring">}</span></code></pre>
+<p><code>for _ in 1..self.height</code> runs exactly <code>height - 1</code> times — once per internal level. When <code>height == 1</code>, the loop is empty and <code>current</code> stays at the root (which is already the leaf). When <code>height == 3</code> the loop runs twice, descending through two levels of internal nodes.</p>
+<p>The <code>path</code> vector records every internal page visited, from root to the immediate parent of the leaf. This path is exactly what <code>propagate_split</code> needs to walk back up if a split occurs.</p>
+<hr>
+<h2 id="propagate_split--the-cascade"><a class="header" href="#propagate_split--the-cascade"><code>propagate_split</code> — the cascade</a></h2>
+<p>This is the heart of insert. When a leaf splits, its parent internal node must record the new separator. But the parent might be full too. And <em>its</em> parent might be full. The cascade climbs until it finds a node with room, or creates a new root.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn propagate_split(
+    &amp;mut self,
+    mut path: Vec&lt;u32&gt;,   // internal nodes from root down to leaf's parent
+    mut sep_key: Vec&lt;u8&gt;,
+    mut right_child: u32,
+) -&gt; Result&lt;(), &amp;'static str&gt;
+<span class="boring">}</span></code></pre>
+<p>The loop pops from the back of <code>path</code> — bottom up, from the leaf’s parent toward the root:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>while let Some(parent_id) = path.pop() {
+    let new_right_id = self.pager.alloc_page_id();
+    let split = {
+        let node = InternalPageMut::new(self.pager.get_mut(parent_id).unwrap());
+        node.insert_or_split(&amp;sep_key, right_child, new_right_id)?
+    };
+    match split {
+        None =&gt; return Ok(()),          // separator fit, cascade stops here
+        Some(s) =&gt; {                    // parent also split, keep climbing
+            self.pager.insert_page(s.right_page.into_page());
+            sep_key = s.separator_key;
+            right_child = new_right_id;
+        }
+    }
+}
+// Path is exhausted → root itself split
+<span class="boring">}</span></code></pre>
+<p>If the loop empties <code>path</code> without stopping, the root page has split. Now you need a new root:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let new_root_id = self.pager.new_page();
+let page = self.pager.get_mut(new_root_id).unwrap();
+let mut root = InternalPageMut::new(page);
+root.set_leftmost_child(old_root_id);   // left half of old root
+root.insert(&amp;sep_key, right_child)?;    // right half of old root
+self.root_page_id = new_root_id;
+self.height += 1;
+<span class="boring">}</span></code></pre>
+<p>This is the <strong>only moment the tree ever grows taller</strong> via a split cascade. Inserting a key can never decrease height; only merges can do that (not yet implemented).</p>
+<h3 id="cascade-example-with-a-3-level-tree"><a class="header" href="#cascade-example-with-a-3-level-tree">Cascade example with a 3-level tree</a></h3>
+<pre><code>Initial state (height=3):
+
+      [root: eve→pg5]
+       │           │
+       ▼           ▼
+[bob→pg2]       [henry→pg7]
+  │      │          │      │
+pg1    pg2        pg6    pg7
+[a,b] [c,d,e]  [e,f,g] [h,i,j]  ← all leaves full
+
+Insert "carol":
+  Step 1: leaf pg2 splits → separator="d", right=pg8
+  Step 2: parent [bob→pg2] gets "d"→pg8 → that page is ALSO full → splits
+          separator="d" pushed to root
+  Step 3: root gets "d"→new_internal → root is full → root splits
+          new root created, height → 4
+</code></pre>
+<p>In practice this cascade is rare. An 8KB page holds hundreds of small entries or ~5 of 1500-byte values. Internal nodes fill far slower than leaves.</p>
+<hr>
+<h2 id="get--finding-a-value"><a class="header" href="#get--finding-a-value"><code>get</code> — finding a value</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn get(&amp;self, key: &amp;[u8]) -&gt; Option&lt;&amp;[u8]&gt; {
+    if self.height == 0 {
+        return None;
+    }
+    let (leaf_id, _) = self.find_leaf(key);
+    self.pager.get(leaf_id)?.get(key)
+}
+<span class="boring">}</span></code></pre>
+<p>Walk to the leaf, ask the page for the key. The returned <code>&amp;[u8]</code> borrows directly from the page’s memory inside the pager — no copy.</p>
+<hr>
+<h2 id="remove--deleting-a-key"><a class="header" href="#remove--deleting-a-key"><code>remove</code> — deleting a key</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn remove(&amp;mut self, key: &amp;[u8]) -&gt; Option&lt;Vec&lt;u8&gt;&gt; {
+    if self.height == 0 {
+        return None;
+    }
+    let (leaf_id, _) = self.find_leaf(key);
+    let page = self.pager.get_mut(leaf_id)?;
+    LeafPageMut::new(page).remove(key)
+}
+<span class="boring">}</span></code></pre>
+<p>Walk to the leaf, tombstone the entry, return the old value. The page handles compaction lazily — see <a href="#dead-tuple-compaction">Dead-Tuple Compaction</a>.</p>
+<p><strong>No rebalancing.</strong> When a leaf drops below half-full after a remove, nothing special happens. The page stays sparse. Merging and redistribution are a future milestone.</p>
+<hr>
+<h2 id="scan--reading-a-range-in-sorted-order"><a class="header" href="#scan--reading-a-range-in-sorted-order"><code>scan</code> — reading a range in sorted order</a></h2>
+<p>A range scan is the feature that justifies the B+ tree’s entire existence. The idea is elegant:</p>
+<ol>
+<li>Walk down the tree to find the leaf where the scan <em>starts</em>.</li>
+<li>Read that leaf from the first matching key to the last key on the page.</li>
+<li>Follow <code>next_leaf_page_id</code> to the right sibling. Repeat until done.</li>
+</ol>
+<p>You never need to climb back up the tree. The leaf sibling chain is a sorted linked list that covers every key in the database.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn scan(&amp;self, start: Option&lt;&amp;[u8]&gt;) -&gt; Scan&lt;'_&gt;
+<span class="boring">}</span></code></pre>
+<p><code>start = None</code> means “scan everything from the beginning.” <code>start = Some(key)</code> starts at the first key ≥ <code>key</code>.</p>
+<pre><code>Scan from "bob" through a 3-page tree:
+
+Page 1           Page 2           Page 3
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│ alice    │     │ carol    │ ──► │ henry    │
+│ bob      │ ──► │ dave     │     │ iris     │
+│           │     │ eve      │     │ zara     │──► None
+└──────────┘     └──────────┘     └──────────┘
+
+scan(Some("bob")) starts at page 1, skips "alice",
+returns "bob" → then follows next→ page 2, returns "carol", "dave", "eve"
+→ follows next → page 3, returns "henry", "iris", "zara" → None, done.
+</code></pre>
+<h3 id="the-scan-iterator"><a class="header" href="#the-scan-iterator">The <code>Scan</code> iterator</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct Scan&lt;'a&gt; {
+    pager: &amp;'a Pager,
+    current_page_id: Option&lt;u32&gt;,
+    slot_idx: usize,
+    skip_before: Option&lt;Vec&lt;u8&gt;&gt;,
+}
+<span class="boring">}</span></code></pre>
+<p><code>Scan</code> is a lazy iterator — it only reads one slot per call to <code>next()</code>. The <code>'a</code> lifetime ties it to the <code>BTree</code>’s pager, so the key and value slices it hands back are zero-copy references directly into page memory.</p>
+<p><code>skip_before</code> carries the start key. On the very first leaf, the iterator checks each key against it and skips keys that come before the start. Once it finds the first key ≥ start, it clears <code>skip_before</code> and never checks again — all subsequent leaves are entirely in range.</p>
+<p><code>current_page_id = None</code> is the termination sentinel. When a leaf has no right sibling, <code>next_leaf_page_id()</code> returns <code>None</code>, <code>current_page_id</code> becomes <code>None</code>, and the next <code>next()</code> call returns <code>None</code>.</p>
+<p>Tombstoned slots — entries deleted after the scan started — are silently skipped because <code>get_key_value_at_slot</code> returns <code>None</code> for tombstones.</p>
+<hr>
+<h2 id="height-evolution-over-time"><a class="header" href="#height-evolution-over-time">Height evolution over time</a></h2>
+<pre><code>Start (empty):         height=0, root_page_id=0 (sentinel)
+
+First insert:          height=1
+  [root leaf: a]
+
+First leaf split:      height=2
+  [root internal: c→]
+     │         │
+  [a,b]     [c,d,e]
+
+Root internal splits:  height=3
+  [new root: …→]
+     │             │
+  [int1:c→]     [int2:h→]
+   │      │      │      │
+ [a,b]  [c,d] [e,f,g] [h,i]
+</code></pre>
+<p>Height only grows when a split reaches the root. It never shrinks (no merge is implemented yet).</p>
+<hr>
+<h2 id="method-reference-2"><a class="header" href="#method-reference-2">Method reference</a></h2>
+<h3 id="btree"><a class="header" href="#btree"><code>BTree</code></a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new()</code></td><td>Empty tree — no pages allocated</td></tr>
+<tr><td><code>insert(key, val)</code></td><td>Insert or update; cascades splits up to a new root if needed</td></tr>
+<tr><td><code>get(key)</code></td><td>Walk to the leaf, return value bytes or <code>None</code></td></tr>
+<tr><td><code>remove(key)</code></td><td>Walk to the leaf, tombstone the entry, return old value or <code>None</code></td></tr>
+<tr><td><code>scan(start)</code></td><td>Return a lazy <code>Scan</code> iterator from <code>start</code> (or the beginning)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="scana"><a class="header" href="#scana"><code>Scan&lt;'a&gt;</code></a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>next()</code></td><td>Return the next <code>(key, value)</code> pair in sorted order, or <code>None</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>Scan</code> implements <code>Iterator&lt;Item = (&amp;'a [u8], &amp;'a [u8])&gt;</code>. Every standard iterator adaptor (<code>map</code>, <code>filter</code>, <code>take</code>, <code>collect</code>, …) works on it.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-pager"><a class="header" href="#the-pager">The Pager</a></h1>
 <p>The <code>Pager</code> manages the collection of pages. It assigns page IDs, allocates new pages, and provides mutable or shared access to existing ones.</p>
 <h2 id="current-implementation"><a class="header" href="#current-implementation">Current implementation</a></h2>
@@ -1520,27 +1835,20 @@ page_compaction_threshold/75%
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="roadmap"><a class="header" href="#roadmap">Roadmap</a></h1>
-<p><code>simpledb</code> is a work-in-progress. The storage primitives are solid; the higher-level B-tree and durability layers are next.</p>
+<p><code>simpledb</code> is a work-in-progress. The storage and B-tree layers are complete; durability and concurrency are next.</p>
 <h2 id="b-tree-operations"><a class="header" href="#b-tree-operations">B-tree operations</a></h2>
-<p>The storage primitives are complete:</p>
+<p>As of the <code>BTree</code> milestone, all core tree operations are complete.</p>
 <ul>
 <li>✅ <code>LeafPage</code> / <code>LeafPageMut</code> with <code>insert_or_split</code> (copy-up)</li>
 <li>✅ <code>InternalPage</code> / <code>InternalPageMut</code> with <code>insert_or_split</code> (push-up)</li>
+<li>✅ <code>BTree::insert</code> — traverses internal nodes, inserts at the correct leaf, cascades splits up to a new root when needed</li>
+<li>✅ <code>BTree::get</code> — traverses internal nodes to reach the right leaf and returns the value</li>
+<li>✅ <code>BTree::remove</code> — deletes from the leaf (no rebalancing yet — see below)</li>
+<li>✅ <code>BTree::scan</code> — lazy <code>Scan</code> iterator that starts at a given key and follows the leaf sibling chain</li>
 </ul>
-<p><code>btree/tree.rs</code> holds only a stub:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub struct BTree {
-    root_page_id: u32,
-    pager: Pager,
-}
-<span class="boring">}</span></code></pre>
-<p>What needs to be added:</p>
+<p>Remaining B-tree work:</p>
 <ul>
-<li><code>BTree::insert</code> — walk the tree, find the correct leaf, call <code>insert_or_split</code>, and propagate the separator key up if a split occurred.</li>
-<li><code>BTree::get</code> — traverse internal nodes to reach the right leaf.</li>
-<li><code>BTree::remove</code> — delete from a leaf; handle underflow (merge or redistribute).</li>
-<li><code>BTree::range_scan</code> — start at the left-most matching leaf and follow sibling pointers.</li>
+<li><code>BTree::remove</code> rebalancing — when a leaf drops below half-full after a delete, merge it with a sibling or redistribute entries. Currently leaves are left sparse.</li>
 </ul>
 <h2 id="disk-io"><a class="header" href="#disk-io">Disk I/O</a></h2>
 <p>The <code>Pager</code> currently stores pages in a <code>HashMap</code>. To make the database persistent:</p>

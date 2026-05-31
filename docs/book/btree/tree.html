@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Internal Pages - simpledb Internals</title>
+        <title>The B-Tree - simpledb Internals</title>
 
 
         <!-- Custom HTML head -->
@@ -177,247 +177,313 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="internal-pages"><a class="header" href="#internal-pages">Internal Pages</a></h1>
-<h2 id="what-is-an-internal-page"><a class="header" href="#what-is-an-internal-page">What is an internal page?</a></h2>
-<p>An internal page does not hold your data. It holds <strong>directions to your data</strong>.</p>
-<p>Think of a building directory in a lobby: it doesn’t contain any offices, it just tells you <em>“accounting is on floor 3, engineering is on floor 5.”</em> The directory is the internal page. The actual offices are the leaf pages.</p>
-<p>Every key stored in an internal page is a <strong>separator</strong> — a boundary marker that says: <em>“everything to my left is smaller than me, everything to my right is greater than or equal to me.”</em></p>
-<p>When you search for a key, you read the internal page, pick the right direction, and follow the pointer. You never stop at an internal page — you keep going until you reach a leaf.</p>
+                        <h1 id="the-b-tree"><a class="header" href="#the-b-tree">The B-Tree</a></h1>
+<h2 id="what-problem-does-it-solve"><a class="header" href="#what-problem-does-it-solve">What problem does it solve?</a></h2>
+<p>You have hundreds of thousands of key-value pairs. You need to find any one of them in microseconds. You need to insert new ones without rebuilding everything. You need to scan a range of them in sorted order.</p>
+<p>A flat array of key-value pairs lets you scan cheaply but requires rewriting half the array on every insert. A hash table gives you O(1) lookup but destroys sorted order. A B+ tree threads the needle: O(log n) insert and lookup, <em>and</em> O(k) range scans, where k is the number of results.</p>
+<p><code>BTree</code> in <code>btree/tree.rs</code> is the top of the stack. It owns the <code>Pager</code>, knows the root, and ties everything together — leaf inserts, split cascades, sibling-chain scans.</p>
 <hr>
-<h2 id="the-layout"><a class="header" href="#the-layout">The layout</a></h2>
-<p>An internal page is also backed by the same slotted <code>Page</code> structure. Each slot stores a separator key mapped to a <strong>child page ID</strong> (a 4-byte <code>u32</code>):</p>
+<h2 id="think-of-a-multi-storey-filing-room"><a class="header" href="#think-of-a-multi-storey-filing-room">Think of a multi-storey filing room</a></h2>
+<p>Imagine a library with physical file drawers. The drawers themselves (leaf pages) hold the actual folders. On the ground floor there’s a wall of index cards (an internal page) that says <em>“surnames A–M: go to room 3; N–Z: go to room 7.”</em> If you have many rooms, you might need a floor directory that points to the right index-card wall.</p>
+<p>The <code>BTree</code> is the librarian who knows how many floors there are, which floor is the index and which floor holds the actual folders, and who handles what happens when a drawer is full and needs a second one.</p>
+<hr>
+<h2 id="the-struct"><a class="header" href="#the-struct">The struct</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub struct InternalPage {
-    page: Page,
+</span>pub struct BTree {
+    root_page_id: u32,
+    height: u32,
+    pager: Pager,
 }
 <span class="boring">}</span></code></pre>
-<p>Each entry in the slot array looks like:</p>
-<pre><code>slot[i] → [ separator_key | child_page_id (4 bytes LE) ]
-</code></pre>
-<p>The slot array is sorted by separator key, just like a leaf.</p>
-<p>There is one special case: the <strong>leftmost child</strong>. For every internal node with <code>n</code> separator keys, there are <code>n+1</code> children. The leftmost child (for keys smaller than the first separator) has no key to pair with. It is stored separately in the <code>next_leaf_page_id</code> header field, which is repurposed for internal pages.</p>
-<pre><code>Internal page layout (logical):
+<p>Three fields. That’s it.</p>
+<p><strong><code>root_page_id</code></strong> is the page ID of the topmost node. Everything starts here. When the tree is empty it’s <code>0</code> (a sentinel — page IDs start at 1).</p>
+<p><strong><code>height</code></strong> describes the tree’s shape:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>height</code></th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>0</code></td><td>Empty — no pages allocated yet</td></tr>
+<tr><td><code>1</code></td><td>Root is a leaf page; no internal nodes at all</td></tr>
+<tr><td><code>2</code></td><td>Root is an internal page; its children are leaf pages</td></tr>
+<tr><td><code>3</code></td><td>Root → internal → internal → leaves</td></tr>
+<tr><td>…</td><td>Each level adds one layer of internal routing</td></tr>
+</tbody>
+</table>
+</div>
+<p>Knowing <code>height</code> is critical. It tells <code>find_leaf</code> exactly how many internal levels to traverse before it reaches a leaf. Without it you’d need to store a “is this page a leaf?” flag inside every page header.</p>
+<p><strong><code>pager</code></strong> owns every page in existence. All 8KB of them live in a <code>HashMap&lt;u32, Page&gt;</code>. The B-tree borrows pages from the pager, modifies them, and stores new ones.</p>
+<hr>
+<h2 id="inserting-a-key-value-pair"><a class="header" href="#inserting-a-key-value-pair">Inserting a key-value pair</a></h2>
+<h3 id="the-happy-path-no-split"><a class="header" href="#the-happy-path-no-split">The happy path (no split)</a></h3>
+<p>You call <code>tree.insert(b"alice", b"data")</code>. Here is what happens, step by step:</p>
+<ol>
+<li>
+<p>If the tree is empty (<code>height == 0</code>), create a fresh leaf page in the pager, record it as the root, set <code>height = 1</code>.</p>
+</li>
+<li>
+<p>Call <code>find_leaf("alice")</code> to walk down to the right leaf page. For a freshly bootstrapped tree this returns the root page immediately.</p>
+</li>
+<li>
+<p>Ask the leaf to insert the entry. The page has room → insert succeeds → done.</p>
+</li>
+</ol>
+<pre><code>After inserting "alice", "bob", "carol" into a fresh tree (height=1):
 
-  leftmost_child | sep[0]→child[0] | sep[1]→child[1] | sep[2]→child[2]
-       │                │                  │                  │
-       ▼                ▼                  ▼                  ▼
-  keys &lt; sep[0]   sep[0]&lt;=k&lt;sep[1]  sep[1]&lt;=k&lt;sep[2]    k&gt;=sep[2]
+root_page_id = 1
+height = 1
+
+Page 1 (leaf, also the root)
+┌─────────────────────────┐
+│ alice → data_a          │
+│ bob   → data_b          │
+│ carol → data_c          │
+└─────────────────────────┘
+next_leaf = None
 </code></pre>
-<p>In memory (the actual <code>Page</code>):</p>
-<pre><code>┌──────────────────────┬───────────────────────────┬──────┬────────────────────┐
-│ Header               │ Slot array                │ free │ Tuple region       │
-│ next_leaf_page_id=L  │ [sep0→A][sep1→B][sep2→C]  │      │ [C_id][B_id][A_id] │
-│ (repurposed as       │  sorted by key            │      │ (4 bytes each)     │
-│  leftmost child L)   │                           │      │                    │
-└──────────────────────┴───────────────────────────┴──────┴────────────────────┘
+<h3 id="when-the-leaf-is-full--the-first-split"><a class="header" href="#when-the-leaf-is-full--the-first-split">When the leaf is full — the first split</a></h3>
+<p>Eventually you fill the leaf. The next insert causes <code>insert_or_split</code> to return a <code>LeafSplit</code> (see <a href="split.html">Leaf Splits</a>).</p>
+<p>The split gives you two things: a <code>separator_key</code> and a new <code>right_page</code>. You must now store the right page in the pager and record the separator somewhere in an internal node. If no parent exists (height was 1, root was a leaf), you create a brand-new internal root and the tree grows one level.</p>
+<pre><code>Before (inserting "dave" into a full leaf):
+
+root_page_id = 1, height = 1
+
+Page 1 (leaf, full)
+┌─────────────────────────┐
+│ alice → data_a          │
+│ bob   → data_b          │  ← "dave" won't fit
+│ carol → data_c          │
+│ eve   → data_e          │
+└─────────────────────────┘
+
+
+After (leaf splits at "carol"; new internal root created):
+
+root_page_id = 3, height = 2
+
+Page 3 (new internal root)
+leftmost=1, [carol→2]
+      │           │
+      ▼           ▼
+Page 1 (leaf)   Page 2 (new leaf)
+┌──────────┐    ┌──────────────┐
+│ alice    │    │ carol        │
+│ bob      │    │ dave         │──► None
+└──────────┘    │ eve          │
+    ──►Page 2   └──────────────┘
 </code></pre>
+<p>The separator <code>"carol"</code> lives in the new root. The old root page (1) keeps its left half. The new page (2) gets the right half. Height becomes 2.</p>
 <hr>
-<h2 id="the-fencepost-problem"><a class="header" href="#the-fencepost-problem">The fencepost problem</a></h2>
-<p>Why is there always one more child than separators?</p>
-<p>Picture 3 fence panels between 4 fence posts:</p>
-<pre><code>post   panel   post   panel   post   panel   post
- |─────────────|─────────────|─────────────|
-</code></pre>
-<p>Separators are the panels (they divide space). Children are the posts (they ARE the spaces). With <code>n</code> separators you always get <code>n+1</code> children.</p>
-<pre><code>n=3 separators:  "bob"       "eve"       "zara"
-                  │           │           │
-   [keys&lt;bob]  [bob..eve)  [eve..zara)  [keys&gt;=zara]
-       ▲           ▲           ▲            ▲
-   leftmost    child[0]    child[1]      child[2]
-</code></pre>
-<p>The leftmost child is the extra “post” on the far left that no separator owns.</p>
-<hr>
-<h2 id="find_child--how-routing-works"><a class="header" href="#find_child--how-routing-works"><code>find_child</code> — how routing works</a></h2>
-<p>This is the most important method. Given a search key, return which child to follow.</p>
+<h2 id="find_leaf--navigating-to-the-right-page"><a class="header" href="#find_leaf--navigating-to-the-right-page"><code>find_leaf</code> — navigating to the right page</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub fn find_child(&amp;self, key: &amp;[u8]) -&gt; u32 {
-    let n = self.slot_count() as usize;
-
-    let mut lo = 0usize;
-    let mut hi = n;
-    while lo &lt; hi {
-        let mid = (lo + hi) / 2;
-        if self.key_at(mid) &lt;= key {
-            lo = mid + 1;
-        } else {
-            hi = mid;
+</span>fn find_leaf(&amp;self, key: &amp;[u8]) -&gt; (u32, Vec&lt;u32&gt;) {
+    let mut path = Vec::new();
+    let mut current = self.root_page_id;
+    for _ in 1..self.height {       // iterate once per internal level
+        path.push(current);
+        let page = self.pager.get(current).unwrap().clone();
+        let node = InternalPage::from_page(page);
+        current = node.find_child(key);
+    }
+    (current, path)
+}
+<span class="boring">}</span></code></pre>
+<p><code>for _ in 1..self.height</code> runs exactly <code>height - 1</code> times — once per internal level. When <code>height == 1</code>, the loop is empty and <code>current</code> stays at the root (which is already the leaf). When <code>height == 3</code> the loop runs twice, descending through two levels of internal nodes.</p>
+<p>The <code>path</code> vector records every internal page visited, from root to the immediate parent of the leaf. This path is exactly what <code>propagate_split</code> needs to walk back up if a split occurs.</p>
+<hr>
+<h2 id="propagate_split--the-cascade"><a class="header" href="#propagate_split--the-cascade"><code>propagate_split</code> — the cascade</a></h2>
+<p>This is the heart of insert. When a leaf splits, its parent internal node must record the new separator. But the parent might be full too. And <em>its</em> parent might be full. The cascade climbs until it finds a node with room, or creates a new root.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn propagate_split(
+    &amp;mut self,
+    mut path: Vec&lt;u32&gt;,   // internal nodes from root down to leaf's parent
+    mut sep_key: Vec&lt;u8&gt;,
+    mut right_child: u32,
+) -&gt; Result&lt;(), &amp;'static str&gt;
+<span class="boring">}</span></code></pre>
+<p>The loop pops from the back of <code>path</code> — bottom up, from the leaf’s parent toward the root:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>while let Some(parent_id) = path.pop() {
+    let new_right_id = self.pager.alloc_page_id();
+    let split = {
+        let node = InternalPageMut::new(self.pager.get_mut(parent_id).unwrap());
+        node.insert_or_split(&amp;sep_key, right_child, new_right_id)?
+    };
+    match split {
+        None =&gt; return Ok(()),          // separator fit, cascade stops here
+        Some(s) =&gt; {                    // parent also split, keep climbing
+            self.pager.insert_page(s.right_page.into_page());
+            sep_key = s.separator_key;
+            right_child = new_right_id;
         }
     }
+}
+// Path is exhausted → root itself split
+<span class="boring">}</span></code></pre>
+<p>If the loop empties <code>path</code> without stopping, the root page has split. Now you need a new root:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let new_root_id = self.pager.new_page();
+let page = self.pager.get_mut(new_root_id).unwrap();
+let mut root = InternalPageMut::new(page);
+root.set_leftmost_child(old_root_id);   // left half of old root
+root.insert(&amp;sep_key, right_child)?;    // right half of old root
+self.root_page_id = new_root_id;
+self.height += 1;
+<span class="boring">}</span></code></pre>
+<p>This is the <strong>only moment the tree ever grows taller</strong> via a split cascade. Inserting a key can never decrease height; only merges can do that (not yet implemented).</p>
+<h3 id="cascade-example-with-a-3-level-tree"><a class="header" href="#cascade-example-with-a-3-level-tree">Cascade example with a 3-level tree</a></h3>
+<pre><code>Initial state (height=3):
 
-    if lo == 0 {
-        self.leftmost_child()
-    } else {
-        self.child_at(lo - 1)
+      [root: eve→pg5]
+       │           │
+       ▼           ▼
+[bob→pg2]       [henry→pg7]
+  │      │          │      │
+pg1    pg2        pg6    pg7
+[a,b] [c,d,e]  [e,f,g] [h,i,j]  ← all leaves full
+
+Insert "carol":
+  Step 1: leaf pg2 splits → separator="d", right=pg8
+  Step 2: parent [bob→pg2] gets "d"→pg8 → that page is ALSO full → splits
+          separator="d" pushed to root
+  Step 3: root gets "d"→new_internal → root is full → root splits
+          new root created, height → 4
+</code></pre>
+<p>In practice this cascade is rare. An 8KB page holds hundreds of small entries or ~5 of 1500-byte values. Internal nodes fill far slower than leaves.</p>
+<hr>
+<h2 id="get--finding-a-value"><a class="header" href="#get--finding-a-value"><code>get</code> — finding a value</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn get(&amp;self, key: &amp;[u8]) -&gt; Option&lt;&amp;[u8]&gt; {
+    if self.height == 0 {
+        return None;
     }
+    let (leaf_id, _) = self.find_leaf(key);
+    self.pager.get(leaf_id)?.get(key)
 }
 <span class="boring">}</span></code></pre>
-<p>The binary search finds the <strong>rightmost separator that is ≤ the search key</strong>. After the loop, <code>lo</code> equals the count of separators that are ≤ the search key.</p>
-<p>Concrete example — separators: <code>["bob", "eve", "zara"]</code>, leftmost=L, children=[A, B, C]:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Search key</th><th>Separators ≤ key</th><th><code>lo</code></th><th>Child returned</th></tr>
-</thead>
-<tbody>
-<tr><td><code>"alice"</code></td><td>none</td><td>0</td><td>leftmost (L)</td></tr>
-<tr><td><code>"bob"</code></td><td><code>"bob"</code></td><td>1</td><td>child[0] (A)</td></tr>
-<tr><td><code>"carol"</code></td><td><code>"bob"</code></td><td>1</td><td>child[0] (A)</td></tr>
-<tr><td><code>"eve"</code></td><td><code>"bob"</code>, <code>"eve"</code></td><td>2</td><td>child[1] (B)</td></tr>
-<tr><td><code>"zara"</code></td><td>all 3</td><td>3</td><td>child[2] (C)</td></tr>
-<tr><td><code>"zzz"</code></td><td>all 3</td><td>3</td><td>child[2] (C)</td></tr>
-</tbody>
-</table>
-</div>
-<p>Notice <code>"carol"</code> → child A, because <code>"bob" &lt;= "carol" &lt; "eve"</code>. Carol lives in the range owned by separator <code>"bob"</code>.</p>
+<p>Walk to the leaf, ask the page for the key. The returned <code>&amp;[u8]</code> borrows directly from the page’s memory inside the pager — no copy.</p>
 <hr>
-<h2 id="the-two-types"><a class="header" href="#the-two-types">The two types</a></h2>
-<p>Like <code>LeafPage</code> / <code>LeafPageMut</code>, internal nodes come in two flavours:</p>
+<h2 id="remove--deleting-a-key"><a class="header" href="#remove--deleting-a-key"><code>remove</code> — deleting a key</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub struct InternalPage {        // owns the page — read-only
-    page: Page,
-}
-
-pub struct InternalPageMut&lt;'a&gt; { // borrows the page mutably — can insert and split
-    page: &amp;'a mut Page,
+</span>pub fn remove(&amp;mut self, key: &amp;[u8]) -&gt; Option&lt;Vec&lt;u8&gt;&gt; {
+    if self.height == 0 {
+        return None;
+    }
+    let (leaf_id, _) = self.find_leaf(key);
+    let page = self.pager.get_mut(leaf_id)?;
+    LeafPageMut::new(page).remove(key)
 }
 <span class="boring">}</span></code></pre>
-<p><code>InternalPage</code> is used when the pager hands you an owned <code>Page</code> and you only need to read or route. <code>InternalPageMut</code> is used when you need to write: inserting a separator after a child splits, or splitting the internal node itself.</p>
+<p>Walk to the leaf, tombstone the entry, return the old value. The page handles compaction lazily — see <a href="../page/compaction.html">Dead-Tuple Compaction</a>.</p>
+<p><strong>No rebalancing.</strong> When a leaf drops below half-full after a remove, nothing special happens. The page stays sparse. Merging and redistribution are a future milestone.</p>
 <hr>
-<h2 id="insert--adding-a-new-routing-entry"><a class="header" href="#insert--adding-a-new-routing-entry"><code>insert</code> — adding a new routing entry</a></h2>
-<p>When a leaf below this node splits, the split produces a <code>separator_key</code> and a new right page. The parent internal node must record this:</p>
+<h2 id="scan--reading-a-range-in-sorted-order"><a class="header" href="#scan--reading-a-range-in-sorted-order"><code>scan</code> — reading a range in sorted order</a></h2>
+<p>A range scan is the feature that justifies the B+ tree’s entire existence. The idea is elegant:</p>
+<ol>
+<li>Walk down the tree to find the leaf where the scan <em>starts</em>.</li>
+<li>Read that leaf from the first matching key to the last key on the page.</li>
+<li>Follow <code>next_leaf_page_id</code> to the right sibling. Repeat until done.</li>
+</ol>
+<p>You never need to climb back up the tree. The leaf sibling chain is a sorted linked list that covers every key in the database.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub fn insert(&amp;mut self, key: &amp;[u8], right_child: u32) -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, &amp;'static str&gt; {
-    self.page.put(key, &amp;right_child.to_le_bytes())
-}
+</span>pub fn scan(&amp;self, start: Option&lt;&amp;[u8]&gt;) -&gt; Scan&lt;'_&gt;
 <span class="boring">}</span></code></pre>
-<p>The child page ID is stored as the value (4 raw bytes, little-endian). The separator key is the key. The underlying <code>Page::put</code> keeps the slot array sorted automatically.</p>
-<hr>
-<h2 id="internal-node-split--push-up"><a class="header" href="#internal-node-split--push-up">Internal node split — “push up”</a></h2>
-<p>An internal page also has a fixed size. When <code>insert_separator</code> returns <code>"page full"</code>, the internal page itself must split. This works differently from a leaf split.</p>
-<h3 id="the-rule-the-middle-key-is-pushed-up-not-copied-up"><a class="header" href="#the-rule-the-middle-key-is-pushed-up-not-copied-up">The rule: the middle key is pushed up, not copied up</a></h3>
-<p>In a leaf split, the middle key is <strong>copied</strong> to the parent — it also stays in the right leaf (because leaves need all their keys for scans).</p>
-<p>In an internal split, the middle key is <strong>pushed</strong> to the parent — it is <strong>removed</strong> from both children. It only lives in the parent.</p>
-<p>Why? Internal nodes are routing tables, not data stores. You only need enough keys to point traffic in the right direction. Once a key has been promoted to the parent, the children on each side of it already know their bounds — they don’t need to store the key themselves.</p>
-<h3 id="step-by-step-example"><a class="header" href="#step-by-step-example">Step-by-step example</a></h3>
-<p>Internal page before (leftmost=L, 5 entries, page is full):</p>
-<pre><code>L | bob→A | eve→B | henry→C | paul→D | zara→E
+<p><code>start = None</code> means “scan everything from the beginning.” <code>start = Some(key)</code> starts at the first key ≥ <code>key</code>.</p>
+<pre><code>Scan from "bob" through a 3-page tree:
+
+Page 1           Page 2           Page 3
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│ alice    │     │ carol    │ ──► │ henry    │
+│ bob      │ ──► │ dave     │     │ iris     │
+│           │     │ eve      │     │ zara     │──► None
+└──────────┘     └──────────┘     └──────────┘
+
+scan(Some("bob")) starts at page 1, skips "alice",
+returns "bob" → then follows next→ page 2, returns "carol", "dave", "eve"
+→ follows next → page 3, returns "henry", "iris", "zara" → None, done.
 </code></pre>
-<p>Insert separator <code>("kate", F)</code> → page full → split.</p>
-<p><strong>Step 1 — collect all entries, add new one, sort:</strong></p>
-<pre><code>all = [(bob,A), (eve,B), (henry,C), (kate,F), (paul,D), (zara,E)]
-       idx 0     idx 1    idx 2      idx 3      idx 4     idx 5
-</code></pre>
-<p><strong>Step 2 — find the midpoint:</strong></p>
-<pre><code>mid = 6 / 2 = 3
-</code></pre>
-<p><strong>Step 3 — identify the three parts:</strong></p>
-<pre><code>left  = all[..3]  = [(bob,A), (eve,B), (henry,C)]
-pushed_up         = all[3]   = (kate, F)          ← goes to parent, removed from here
-right = all[4..]  = [(paul,D), (zara,E)]
-</code></pre>
-<p><strong>Step 4 — build left page (same page ID, same leftmost child):</strong></p>
-<pre><code>Left internal page:
-  leftmost=L | bob→A | eve→B | henry→C
-</code></pre>
-<p><strong>Step 5 — build right page (new page ID, leftmost = pushed-up entry’s child):</strong></p>
-<p>The pushed-up entry was <code>(kate, F)</code>. The key <code>"kate"</code> goes to the parent. Its child <code>F</code> becomes the leftmost child of the right page — because <code>F</code> is the page for keys <code>"kate" &lt;= k &lt; "paul"</code>.</p>
-<pre><code>Right internal page:
-  leftmost=F | paul→D | zara→E
-</code></pre>
-<p><strong>Step 6 — return the result:</strong></p>
+<h3 id="the-scan-iterator"><a class="header" href="#the-scan-iterator">The <code>Scan</code> iterator</a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>InternalSplit {
-    separator_key: "kate",     // insert into parent
-    right_page: /* right */,   // store in pager
+</span>pub struct Scan&lt;'a&gt; {
+    pager: &amp;'a Pager,
+    current_page_id: Option&lt;u32&gt;,
+    slot_idx: usize,
+    skip_before: Option&lt;Vec&lt;u8&gt;&gt;,
 }
 <span class="boring">}</span></code></pre>
-<h3 id="full-before--after"><a class="header" href="#full-before--after">Full before / after</a></h3>
-<pre><code>BEFORE (inserting kate→F into full internal node):
-
-        [grandparent]
-              │
-              ▼
-  L | bob→A | eve→B | henry→C | paul→D | zara→E
-
-
-AFTER (new_right_page_id = 9):
-
-           [grandparent]
-           now has "kate"→9 inserted
-                │           │
-                ▼           ▼
-  L|bob→A|eve→B|henry→C    F|paul→D|zara→E
-  (original page, rebuilt)  (new page 9)
-
-  "kate" is GONE from both children.
-  It lives only in the grandparent.
-</code></pre>
+<p><code>Scan</code> is a lazy iterator — it only reads one slot per call to <code>next()</code>. The <code>'a</code> lifetime ties it to the <code>BTree</code>’s pager, so the key and value slices it hands back are zero-copy references directly into page memory.</p>
+<p><code>skip_before</code> carries the start key. On the very first leaf, the iterator checks each key against it and skips keys that come before the start. Once it finds the first key ≥ start, it clears <code>skip_before</code> and never checks again — all subsequent leaves are entirely in range.</p>
+<p><code>current_page_id = None</code> is the termination sentinel. When a leaf has no right sibling, <code>next_leaf_page_id()</code> returns <code>None</code>, <code>current_page_id</code> becomes <code>None</code>, and the next <code>next()</code> call returns <code>None</code>.</p>
+<p>Tombstoned slots — entries deleted after the scan started — are silently skipped because <code>get_key_value_at_slot</code> returns <code>None</code> for tombstones.</p>
 <hr>
-<h2 id="leaf-split-vs-internal-split--side-by-side"><a class="header" href="#leaf-split-vs-internal-split--side-by-side">Leaf split vs internal split — side by side</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th></th><th>Leaf split</th><th>Internal split</th></tr>
-</thead>
-<tbody>
-<tr><td>Where does the middle key go?</td><td><strong>Copied up</strong> — stays in right leaf + sent to parent</td><td><strong>Pushed up</strong> — only in parent, gone from children</td></tr>
-<tr><td>Right child’s leftmost entry</td><td>The first entry of the right half</td><td>The <strong>child pointer</strong> from the middle entry</td></tr>
-<tr><td>Why the difference?</td><td>Leaves need all keys for range scan via sibling chain</td><td>Internal nodes only route — parent has the key now</td></tr>
-</tbody>
-</table>
-</div>
+<h2 id="height-evolution-over-time"><a class="header" href="#height-evolution-over-time">Height evolution over time</a></h2>
+<pre><code>Start (empty):         height=0, root_page_id=0 (sentinel)
+
+First insert:          height=1
+  [root leaf: a]
+
+First leaf split:      height=2
+  [root internal: c→]
+     │         │
+  [a,b]     [c,d,e]
+
+Root internal splits:  height=3
+  [new root: …→]
+     │             │
+  [int1:c→]     [int2:h→]
+   │      │      │      │
+ [a,b]  [c,d] [e,f,g] [h,i]
+</code></pre>
+<p>Height only grows when a split reaches the root. It never shrinks (no merge is implemented yet).</p>
 <hr>
 <h2 id="method-reference"><a class="header" href="#method-reference">Method reference</a></h2>
-<h3 id="internalpage-read-only"><a class="header" href="#internalpage-read-only"><code>InternalPage</code> (read-only)</a></h3>
+<h3 id="btree"><a class="header" href="#btree"><code>BTree</code></a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Method</th><th>What it does</th></tr>
 </thead>
 <tbody>
-<tr><td><code>new(page_id, leftmost_child)</code></td><td>Fresh internal page with a starting leftmost child</td></tr>
-<tr><td><code>from_page(p)</code></td><td>Wrap an existing <code>Page</code> as an internal node</td></tr>
-<tr><td><code>into_page(self)</code></td><td>Unwrap back to <code>Page</code></td></tr>
-<tr><td><code>page_id()</code></td><td>This node’s page ID</td></tr>
-<tr><td><code>slot_count()</code></td><td>Number of separator entries</td></tr>
-<tr><td><code>leftmost_child()</code></td><td>Child page ID for keys &lt; first separator</td></tr>
-<tr><td><code>key_at(i)</code></td><td>Separator key at slot index <code>i</code></td></tr>
-<tr><td><code>child_at(i)</code></td><td>Right child page ID for separator at index <code>i</code></td></tr>
-<tr><td><code>find_child(key)</code></td><td>Binary search → which child page ID to follow</td></tr>
-<tr><td><code>entries()</code></td><td>All <code>(separator_key, right_child)</code> pairs as a <code>Vec</code></td></tr>
+<tr><td><code>new()</code></td><td>Empty tree — no pages allocated</td></tr>
+<tr><td><code>insert(key, val)</code></td><td>Insert or update; cascades splits up to a new root if needed</td></tr>
+<tr><td><code>get(key)</code></td><td>Walk to the leaf, return value bytes or <code>None</code></td></tr>
+<tr><td><code>remove(key)</code></td><td>Walk to the leaf, tombstone the entry, return old value or <code>None</code></td></tr>
+<tr><td><code>scan(start)</code></td><td>Return a lazy <code>Scan</code> iterator from <code>start</code> (or the beginning)</td></tr>
 </tbody>
 </table>
 </div>
-<h3 id="internalpagemuta-mutable"><a class="header" href="#internalpagemuta-mutable"><code>InternalPageMut&lt;'a&gt;</code> (mutable)</a></h3>
-<p>All <code>InternalPage</code> read methods are available, plus:</p>
+<h3 id="scana"><a class="header" href="#scana"><code>Scan&lt;'a&gt;</code></a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Method</th><th>What it does</th></tr>
 </thead>
 <tbody>
-<tr><td><code>new(page)</code></td><td>Borrow a <code>&amp;mut Page</code> as a mutable internal node</td></tr>
-<tr><td><code>set_leftmost_child(id)</code></td><td>Update the leftmost child pointer</td></tr>
-<tr><td><code>insert(key, child)</code></td><td>Add a routing entry; returns <code>Err("page full")</code> if no space</td></tr>
-<tr><td><code>insert_or_split(key, child, new_id)</code></td><td>Insert with split if needed; returns <code>Option&lt;InternalSplit&gt;</code></td></tr>
+<tr><td><code>next()</code></td><td>Return the next <code>(key, value)</code> pair in sorted order, or <code>None</code></td></tr>
 </tbody>
 </table>
 </div>
+<p><code>Scan</code> implements <code>Iterator&lt;Item = (&amp;'a [u8], &amp;'a [u8])&gt;</code>. Every standard iterator adaptor (<code>map</code>, <code>filter</code>, <code>take</code>, <code>collect</code>, …) works on it.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../btree/split.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../btree/internal.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../btree/tree.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../pager.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -427,11 +493,11 @@ AFTER (new_right_page_id = 9):
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../btree/split.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../btree/internal.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../btree/tree.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../pager.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
