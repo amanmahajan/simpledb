@@ -134,8 +134,12 @@ impl<'a> LeafPageMut<'a> {
             Ok(_) => Ok(None),
             Err("page full") => {
                 let mut all = self.entries();
-                all.push((key.to_vec(), val.to_vec()));
-                all.sort_by(|a, b| a.0.cmp(&b.0));
+                // entries() is already sorted; maintain order by inserting at the
+                // correct position, or updating in-place for an existing key.
+                match all.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
+                    Ok(i) => all[i].1 = val.to_vec(),
+                    Err(i) => all.insert(i, (key.to_vec(), val.to_vec())),
+                }
 
                 let mid = all.len() / 2;
                 let left_entries = &all[..mid];

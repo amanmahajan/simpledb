@@ -143,6 +143,7 @@ impl Page {
     }
 
     fn compact_live_tuples(&mut self) -> Result<(), &'static str> {
+        let saved_next = self.next_leaf_page_id();
         let mut live = Vec::with_capacity(self.slot_count() as usize);
 
         for i in 0..self.slot_count() as usize {
@@ -161,6 +162,7 @@ impl Page {
         for (k, v) in live {
             compacted.put(&k, &v)?;
         }
+        compacted.set_next_leaf_page_id(saved_next);
 
         self.data = compacted.data;
         Ok(())
